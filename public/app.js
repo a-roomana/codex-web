@@ -3449,14 +3449,16 @@ function removeItemViewElement(view) {
   }
 }
 
-function createMessageView(item) {
+function createMessageView(item, turnId = null, { continuation = false } = {}) {
   const role = item.type === "userMessage" ? "user" : "assistant";
   const row = document.createElement("article");
   row.className = `message-row ${role}`;
+  if (turnId) row.dataset.turnId = turnId;
   if (role === "assistant") {
     row.classList.add("final-answer");
+    row.classList.toggle("continuation", continuation);
     row.dataset.phase = item.phase || "final_answer";
-    row.setAttribute("aria-label", "پاسخ نهایی");
+    row.setAttribute("aria-label", continuation ? "ادامهٔ پاسخ قبلی" : "پاسخ نهایی");
   }
   row.dataset.itemId = item.id;
 
@@ -3465,6 +3467,12 @@ function createMessageView(item) {
   const content = document.createElement("div");
   content.className = "message-content";
   content.dir = "auto";
+  if (continuation) {
+    const label = document.createElement("div");
+    label.className = "message-continuation-label";
+    label.textContent = "ادامهٔ پاسخ";
+    body.append(label);
+  }
   body.append(content);
   if (role === "assistant") body.append(createAssistantMessageActions());
   row.append(body);
@@ -3720,13 +3728,13 @@ function updateActivity(view, item, phase) {
   );
 }
 
-function reconcileOptimisticUserMessage(item, existingView) {
+function reconcileOptimisticUserMessage(item, existingView, turnId = null) {
   const optimistic = state.optimisticUserMessages.get(item.clientId);
   if (!optimistic) return existingView;
+  if (item.id === optimistic.itemId) return existingView;
   optimistic.accepted = true;
-  if (optimistic.rpcSettled) {
-    state.optimisticUserMessages.delete(item.clientId);
-  }
+  optimistic.serverItemId = item.id;
+  if (turnId) optimistic.turnId = turnId;
 
   const optimisticId = optimistic.itemId;
   const optimisticView = state.itemViews.get(optimisticId);
@@ -3747,11 +3755,11 @@ function reconcileOptimisticUserMessage(item, existingView) {
   return optimisticView;
 }
 
-function renderItem(item, phase = "completed", turnId = null) {
+function renderItem(item, phase = "completed", turnId = null, options = {}) {
   if (!item?.id || !item.type) return null;
   let view = state.itemViews.get(item.id);
   if (item.type === "userMessage" && item.clientId) {
-    view = reconcileOptimisticUserMessage(item, view);
+    view = reconcileOptimisticUserMessage(item, view, turnId);
   }
   const commentary = isCommentaryItem(item);
   const isMessage = item.type === "userMessage" || (item.type === "agentMessage" && !commentary);
@@ -3767,7 +3775,7 @@ function renderItem(item, phase = "completed", turnId = null) {
     view = commentary
       ? createCommentaryView(item, turnId, phase)
       : isMessage
-        ? createMessageView(item)
+        ? createMessageView(item, turnId, options)
         : createActivityView(item, turnId, phase);
     view.text = previousText;
     state.itemViews.set(item.id, view);
@@ -3790,7 +3798,7 @@ function renderItem(item, phase = "completed", turnId = null) {
   return view;
 }
 
-function renderOptimisticUserMessage(clientId, input) {
+function renderOptimisticUserMessage(clientId, input, threadId = null) {
   const item = {
     clientId,
     content: input,
@@ -3801,34 +3809,40 @@ function renderOptimisticUserMessage(clientId, input) {
   if (!view) return;
   state.optimisticUserMessages.set(clientId, {
     accepted: false,
+    input,
     itemId: item.id,
-    rpcSettled: false,
+    serverItemId: null,
+    threadId,
+    turnId: null,
   });
+  while (state.optimisticUserMessages.size > 50) {
+    const oldestClientId = state.optimisticUserMessages.keys().next().value;
+    if (!oldestClientId || oldestClientId === clientId) break;
+    state.optimisticUserMessages.delete(oldestClientId);
+  }
   elements.welcome.classList.add("hidden");
 }
 
-function settleOptimisticUserMessage(clientId) {
+function updateOptimisticUserMessageTarget(clientId, threadId, turnId = null) {
   const optimistic = state.optimisticUserMessages.get(clientId);
   if (!optimistic) return;
-  optimistic.rpcSettled = true;
-  if (optimistic.accepted) {
-    state.optimisticUserMessages.delete(clientId);
-  }
+  optimistic.threadId = threadId;
+  if (turnId) optimistic.turnId = turnId;
 }
 
-function acceptBackgroundOptimisticUserMessage(clientId) {
+function acceptBackgroundOptimisticUserMessage(clientId, itemId, threadId, turnId = null) {
   const optimistic = state.optimisticUserMessages.get(clientId);
   if (!optimistic) return;
   optimistic.accepted = true;
-  if (optimistic.rpcSettled) {
-    state.optimisticUserMessages.delete(clientId);
-  }
+  optimistic.serverItemId = itemId || optimistic.serverItemId;
+  optimistic.threadId = threadId || optimistic.threadId;
+  if (turnId) optimistic.turnId = turnId;
 }
 
 function rollbackOptimisticUserMessage(clientId) {
   const optimistic = state.optimisticUserMessages.get(clientId);
-  state.optimisticUserMessages.delete(clientId);
   if (optimistic?.accepted) return false;
+  state.optimisticUserMessages.delete(clientId);
   if (!optimistic) return true;
 
   const optimisticId = optimistic.itemId;
@@ -3850,12 +3864,50 @@ function rollbackOptimisticUserMessage(clientId) {
   return true;
 }
 
+function restoreRecentUserMessages(thread) {
+  for (const [clientId, optimistic] of state.optimisticUserMessages) {
+    if (optimistic.threadId !== thread.id) continue;
+    const canonicalView = optimistic.serverItemId
+      ? state.itemViews.get(optimistic.serverItemId)
+      : null;
+    if (canonicalView) {
+      state.optimisticUserMessages.delete(clientId);
+      continue;
+    }
+
+    const item = {
+      clientId,
+      content: optimistic.input,
+      id: optimistic.itemId,
+      type: "userMessage",
+    };
+    const view = renderItem(item, "completed", optimistic.turnId);
+    if (!view || !optimistic.turnId) continue;
+    const firstTurnElement = [...elements.messages.querySelectorAll("[data-turn-id]")].find(
+      (element) => element.dataset.turnId === optimistic.turnId && element !== view.element,
+    );
+    if (firstTurnElement) elements.messages.insertBefore(view.element, firstTurnElement);
+  }
+}
+
+function isContinuationTurn(turn) {
+  return (
+    String(turn?.id || "").startsWith("rollout-") &&
+    !(turn.items || []).some((item) => item.type === "userMessage")
+  );
+}
+
 function renderHistory(thread) {
   clearConversation();
   let activeTurn = null;
   const inProgressTurns = [];
   for (const turn of thread.turns || []) {
-    for (const item of turn.items || []) renderItem(item, "completed", turn.id);
+    const continuation = isContinuationTurn(turn);
+    for (const item of turn.items || []) {
+      renderItem(item, "completed", turn.id, {
+        continuation: continuation && item.type === "agentMessage" && !isCommentaryItem(item),
+      });
+    }
     const processView = state.turnProcessViews.get(turn.id);
     if (processView) {
       setTurnProcessState(processView, turn.status === "inProgress", {
@@ -3869,6 +3921,7 @@ function renderHistory(thread) {
       }
     }
   }
+  restoreRecentUserMessages(thread);
   const activity = ensureThreadActivity(thread.id);
   const hasPendingInteraction = hasPendingInteractionForThread(thread.id);
   if (activeTurn) {
@@ -4158,7 +4211,14 @@ function navigateToUserMessage(direction) {
   scheduleUserMessageNavigationUpdate();
 }
 
-function appendDelta(itemId, delta, kind, turnId = null, itemPhase = null) {
+function appendDelta(
+  itemId,
+  delta,
+  kind,
+  turnId = null,
+  itemPhase = null,
+  continuation = false,
+) {
   let view = state.itemViews.get(itemId);
   if (!view) {
     const item =
@@ -4173,7 +4233,7 @@ function appendDelta(itemId, delta, kind, turnId = null, itemPhase = null) {
                   ? "fileChange"
                   : "commandExecution",
           };
-    view = renderItem(item, "started", turnId);
+    view = renderItem(item, "started", turnId, { continuation });
   }
   if (!view) return;
 
@@ -4326,7 +4386,7 @@ async function sendPrompt(
     state.drafts.set(sourceDraftKey, "");
     resizePrompt();
   }
-  renderOptimisticUserMessage(clientUserMessageId, input);
+  renderOptimisticUserMessage(clientUserMessageId, input, sourceThreadId);
   scrollToBottom(true, true);
   setBusy(true);
   if (sourceThreadId) {
@@ -4346,6 +4406,7 @@ async function sendPrompt(
       sourceDraftKey,
     );
     targetThreadId = threadId;
+    updateOptimisticUserMessageTarget(clientUserMessageId, threadId);
     await activatePendingGoal(threadId);
     const provider =
       state.currentThreadId === threadId && state.currentThread?.provider
@@ -4380,7 +4441,7 @@ async function sendPrompt(
     }
     const result = await rpc("turn/start", params);
     turnAccepted = true;
-    settleOptimisticUserMessage(clientUserMessageId);
+    updateOptimisticUserMessageTarget(clientUserMessageId, threadId, result.turn.id);
     const completedBeforeResponse = state.completedTurns.has(
       turnEventKey(threadId, result.turn.id),
     );
@@ -4520,15 +4581,29 @@ function queueThreadEvent(message) {
 
 function renderThreadEvent(message) {
   const { method, params = {} } = message;
+  const continuation = String(params.turnId || "").startsWith("rollout-");
   switch (method) {
     case "item/started":
-      renderItem(params.item, "started", params.turnId);
+      renderItem(params.item, "started", params.turnId, {
+        continuation:
+          continuation && params.item?.type === "agentMessage" && !isCommentaryItem(params.item),
+      });
       break;
     case "item/completed":
-      renderItem(params.item, "completed", params.turnId);
+      renderItem(params.item, "completed", params.turnId, {
+        continuation:
+          continuation && params.item?.type === "agentMessage" && !isCommentaryItem(params.item),
+      });
       break;
     case "item/agentMessage/delta":
-      appendDelta(params.itemId, params.delta || "", "agent", params.turnId, params.phase);
+      appendDelta(
+        params.itemId,
+        params.delta || "",
+        "agent",
+        params.turnId,
+        params.phase,
+        continuation,
+      );
       break;
     case "item/reasoning/summaryTextDelta":
     case "item/reasoning/textDelta":
@@ -4732,7 +4807,12 @@ function handleNotification(message) {
       params.item?.type === "userMessage" &&
       params.item.clientId
     ) {
-      acceptBackgroundOptimisticUserMessage(params.item.clientId);
+      acceptBackgroundOptimisticUserMessage(
+        params.item.clientId,
+        params.item.id,
+        threadId,
+        params.turnId,
+      );
     }
     queueThreadEvent(message);
     return;

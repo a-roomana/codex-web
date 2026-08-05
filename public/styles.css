@@ -939,6 +939,17 @@ body.sidebar-collapsed .menu-button {
   justify-content: stretch;
 }
 
+.message-row.assistant.continuation {
+  margin-top: -18px;
+}
+
+.message-continuation-label {
+  margin-bottom: 7px;
+  color: var(--muted-2);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 .message-avatar {
   display: none;
   width: 29px;

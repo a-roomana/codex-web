@@ -151,6 +151,11 @@ test("submitted user message stays visible while the assistant is streaming", as
     updatedAt: now,
     status: { type: "idle" },
   };
+  const otherThreadSummary = {
+    ...threadSummary,
+    id: "thread-2",
+    name: "Other thread",
+  };
   const resumedThread = {
     ...threadSummary,
     turns: [
@@ -195,6 +200,41 @@ test("submitted user message stays visible while the assistant is streaming", as
           },
         ],
       },
+      {
+        id: "rollout-continuation",
+        status: "completed",
+        items: [
+          {
+            type: "agentMessage",
+            id: "rollout-final",
+            text: "ادامهٔ خودکار همان پاسخ",
+            phase: "final_answer",
+          },
+        ],
+      },
+    ],
+  };
+  const otherResumedThread = {
+    ...otherThreadSummary,
+    turns: [
+      {
+        id: "other-turn",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "other-user",
+            clientId: null,
+            content: [{ type: "text", text: "پیام گفتگوی دیگر" }],
+          },
+          {
+            type: "agentMessage",
+            id: "other-agent",
+            text: "پاسخ گفتگوی دیگر",
+            phase: "final_answer",
+          },
+        ],
+      },
     ],
   };
   const turnStartRequests = [];
@@ -220,11 +260,17 @@ test("submitted user message stays visible while the assistant is streaming", as
     const { method, params } = JSON.parse(options.body);
     if (method === "model/list") return jsonResponse({ result: { data: [] } });
     if (method === "thread/list") {
-      return jsonResponse({ result: { data: [threadSummary], nextCursor: null } });
+      return jsonResponse({
+        result: { data: [threadSummary, otherThreadSummary], nextCursor: null },
+      });
     }
     if (method === "thread/resume") {
       return jsonResponse({
-        result: { thread: resumedThread, cwd: "/workspace", model: "test-model" },
+        result: {
+          thread: params.threadId === "thread-2" ? otherResumedThread : resumedThread,
+          cwd: "/workspace",
+          model: "test-model",
+        },
       });
     }
     if (method === "turn/start") {
@@ -285,6 +331,13 @@ test("submitted user message stays visible while the assistant is streaming", as
   assert.equal(finalAnswer.closest(".turn-process"), null);
   assert.equal(finalAnswer.classList.contains("final-answer"), true);
   assert.equal(finalAnswer.dataset.phase, "final_answer");
+  const rolloutFinal = document.querySelector("[data-item-id='rollout-final']");
+  assert.equal(rolloutFinal.classList.contains("continuation"), true);
+  assert.equal(
+    rolloutFinal.querySelector(".message-continuation-label").textContent,
+    "ادامهٔ پاسخ",
+  );
+  assert.equal(rolloutFinal.getAttribute("aria-label"), "ادامهٔ پاسخ قبلی");
   assert.equal(document.querySelector("[data-item-id='reasoning-old']").hasAttribute("open"), false);
   assert.equal(document.querySelector("[data-item-id='reasoning-old'] summary").textContent, "تفکر");
   assert.equal(document.querySelector("[data-item-id='reasoning-empty']").hidden, true);
@@ -431,6 +484,24 @@ test("submitted user message stays visible while the assistant is streaming", as
       },
     },
   });
+  resumedThread.turns.push({
+    id: "turn-new",
+    status: "completed",
+    items: [
+      {
+        type: "userMessage",
+        id: "user-from-server",
+        clientId,
+        content: [{ type: "text", text: "پیام تازه" }],
+      },
+      {
+        type: "agentMessage",
+        id: "agent-streaming",
+        text: "پاسخ در حال استریم",
+        phase: "final_answer",
+      },
+    ],
+  });
 
   prompt.value = "پیامی که ارسال نشد";
   prompt.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
@@ -508,6 +579,43 @@ test("submitted user message stays visible while the assistant is streaming", as
       document.querySelector("#stop-turn").classList.contains("hidden"),
       false,
     );
+
+    resumedThread.turns.push({
+      id: "turn-accepted",
+      status: "completed",
+      items: [
+        {
+          type: "agentMessage",
+          id: "accepted-agent-from-history",
+          text: "پاسخ ذخیره‌شده بدون پیام کاربر",
+          phase: "final_answer",
+        },
+      ],
+    });
+    document.querySelector("[data-thread-id='thread-2']").click();
+    await waitFor(
+      () => document.querySelector("[data-item-id='other-agent']"),
+      "other thread was not rendered",
+    );
+    document.querySelector("[data-thread-id='thread-1']").click();
+    await waitFor(
+      () => document.querySelector("[data-item-id='accepted-agent-from-history']"),
+      "original thread was not rendered again",
+    );
+
+    const restoredUser = [...document.querySelectorAll(".message-row.user")].find(
+      (row) => row.textContent.trim() === "پیام پذیرفته‌شده",
+    );
+    const restoredAnswer = document.querySelector(
+      "[data-item-id='accepted-agent-from-history']",
+    );
+    assert.ok(restoredUser, "accepted user message disappeared after history refresh");
+    assert.equal(
+      restoredUser.compareDocumentPosition(restoredAnswer) &
+        dom.window.Node.DOCUMENT_POSITION_FOLLOWING,
+      dom.window.Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
   } finally {
     console.error = originalConsoleError;
   }
