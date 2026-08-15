@@ -9,6 +9,13 @@ import { randomUUID } from "node:crypto";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
+import { ClaudeProvider } from "./providers/claude-provider.mjs";
+import {
+  authorizeRequest,
+  defaultTailscaleBinary,
+  TailscaleRemoteAccess,
+} from "./remote-access.mjs";
+import { sharedConversationSnapshot, WebDataStore } from "./web-data-store.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(ROOT, "public");
@@ -23,10 +30,11 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`Codex Web ${PACKAGE.version}
 
 Usage:
-  codex-web [CODEX_OPTIONS]
+  codex-web [WEB_OPTIONS] [CODEX_OPTIONS]
 
 Web options:
   --no-open                 Do not open a browser automatically
+  --remote                  Share privately through Tailscale Serve
   -h, --help                Show this help
   -V, --version             Show the version
 
@@ -44,28 +52,65 @@ Environment:
   CODEX_WEB_PORT            HTTP port (default: 4173)
   CODEX_WEB_CWD             Default working directory (default: current directory)
   CODEX_WEB_NO_OPEN=1       Do not open a browser automatically
-  CODEX_WEB_UPLOAD_DIR      Image upload cache directory
-  CODEX_BIN                 Codex executable (default: codex)`);
+  CODEX_WEB_REMOTE=1        Enable private Tailscale remote access
+  CODEX_WEB_REMOTE_PORT     Tailscale HTTPS port (default: CODEX_WEB_PORT)
+  CODEX_WEB_REMOTE_USER     Allowed Tailscale login (default: device owner)
+  CODEX_WEB_UPLOAD_DIR      File and image upload cache directory
+  CODEX_WEB_DATA_DIR        Projects and shared-chat metadata directory
+  TAILSCALE_BIN             Tailscale executable (default: auto-detected)
+  CODEX_BIN                 Codex executable (default: codex)
+  CLAUDE_BIN                Claude Code executable (default: claude)
+  CLAUDE_CONFIG_DIR         Claude Code config/session directory (default: ~/.claude)
+  CLAUDE_WEB_DATA_DIR       Claude Web conversation metadata directory`);
   process.exit(0);
 }
 
 const HOST = "127.0.0.1";
-const PORT = parsePort(process.env.CODEX_WEB_PORT ?? "4173");
+const PORT = parsePort(process.env.CODEX_WEB_PORT ?? "4173", "CODEX_WEB_PORT");
+const REMOTE_ENABLED =
+  process.argv.includes("--remote") || process.env.CODEX_WEB_REMOTE === "1";
+const REMOTE_PORT = REMOTE_ENABLED
+  ? parsePort(
+      process.env.CODEX_WEB_REMOTE_PORT ?? String(PORT),
+      "CODEX_WEB_REMOTE_PORT",
+    )
+  : PORT;
+const REMOTE_USER = process.env.CODEX_WEB_REMOTE_USER || "";
+const TAILSCALE_BIN = defaultTailscaleBinary();
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
+const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
+const CLAUDE_CONFIG_DIR = resolve(
+  process.env.CLAUDE_CONFIG_DIR ||
+    process.env.CLAUDE_HOME ||
+    join(os.homedir(), ".claude"),
+);
 const DEFAULT_CWD = process.env.CODEX_WEB_CWD || process.cwd();
-const WEB_ARGS = new Set(["--no-open", "--help", "-h", "--version", "-V"]);
+const WEB_ARGS = new Set([
+  "--no-open",
+  "--remote",
+  "--help",
+  "-h",
+  "--version",
+  "-V",
+]);
 const RAW_CODEX_ARGS = process.argv.slice(2).filter((arg) => !WEB_ARGS.has(arg));
 const { serverArgs: CODEX_ARGS, threadDefaults: CLI_THREAD_DEFAULTS } =
   prepareCodexArgs(RAW_CODEX_ARGS);
 const SHOULD_OPEN = !process.argv.includes("--no-open") && process.env.CODEX_WEB_NO_OPEN !== "1";
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
-const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const CACHE_HOME =
   process.env.XDG_CACHE_HOME ||
   (process.platform === "win32" && process.env.LOCALAPPDATA) ||
   join(os.homedir(), ".cache");
 const UPLOAD_DIR = resolve(
   process.env.CODEX_WEB_UPLOAD_DIR || join(CACHE_HOME, "codex-web", "uploads"),
+);
+const WEB_DATA_DIR = resolve(
+  process.env.CODEX_WEB_DATA_DIR || join(CACHE_HOME, "codex-web", "data"),
+);
+const CLAUDE_DATA_DIR = resolve(
+  process.env.CLAUDE_WEB_DATA_DIR || join(CACHE_HOME, "codex-web", "claude"),
 );
 
 const IMAGE_TYPES = new Map([
@@ -80,7 +125,12 @@ const IMAGE_TYPES = new Map([
 const RPC_ALLOWLIST = new Set([
   "account/read",
   "account/rateLimits/read",
+  "collaborationMode/list",
   "model/list",
+  "remoteControl/enable",
+  "remoteControl/status/read",
+  "remoteControl/pairing/start",
+  "remoteControl/pairing/status",
   "thread/list",
   "thread/read",
   "thread/start",
@@ -89,6 +139,9 @@ const RPC_ALLOWLIST = new Set([
   "thread/unarchive",
   "thread/compact/start",
   "thread/setName",
+  "thread/goal/set",
+  "thread/goal/get",
+  "thread/goal/clear",
   "turn/start",
   "turn/steer",
   "turn/interrupt",
@@ -118,10 +171,10 @@ const MIME_TYPES = {
 const clients = new Set();
 const pendingServerRequests = new Map();
 
-function parsePort(value) {
+function parsePort(value, name) {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`Invalid CODEX_WEB_PORT: ${value}`);
+    throw new Error(`Invalid ${name}: ${value}`);
   }
   return port;
 }
@@ -329,7 +382,18 @@ function requestImageType(req) {
   return type;
 }
 
-function requestImageName(req) {
+function requestUploadType(req) {
+  const contentType = req.headers["content-type"] || "application/octet-stream";
+  const type = contentType.split(";", 1)[0].trim().toLowerCase();
+  if (!type || type.length > 127 || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type)) {
+    const error = new Error("Content-Type is invalid");
+    error.status = 415;
+    throw error;
+  }
+  return type;
+}
+
+function requestUploadName(req) {
   const header = req.headers["x-file-name"];
   if (typeof header !== "string" || !header || header.length > 1024) {
     const error = new Error("X-File-Name header is required");
@@ -348,14 +412,14 @@ function requestImageName(req) {
 
   const leaf = name.replaceAll("\\", "/").split("/").pop()?.trim() || "";
   if (!leaf) {
-    const error = new Error("Image file name is invalid");
+    const error = new Error("File name is invalid");
     error.status = 400;
     throw error;
   }
   return leaf;
 }
 
-async function readImage(req) {
+async function readUpload(req) {
   const contentLength = req.headers["content-length"];
   if (contentLength !== undefined) {
     const declaredSize = Number(contentLength);
@@ -364,8 +428,8 @@ async function readImage(req) {
       error.status = 400;
       throw error;
     }
-    if (declaredSize > MAX_IMAGE_BYTES) {
-      const error = new Error("Image is larger than 25 MiB");
+    if (declaredSize > MAX_UPLOAD_BYTES) {
+      const error = new Error("Upload is larger than 25 MiB");
       error.status = 413;
       throw error;
     }
@@ -375,15 +439,15 @@ async function readImage(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_IMAGE_BYTES) {
-      const error = new Error("Image is larger than 25 MiB");
+    if (size > MAX_UPLOAD_BYTES) {
+      const error = new Error("Upload is larger than 25 MiB");
       error.status = 413;
       throw error;
     }
     chunks.push(chunk);
   }
   if (size === 0) {
-    const error = new Error("Image body is empty");
+    const error = new Error("Upload body is empty");
     error.status = 400;
     throw error;
   }
@@ -428,7 +492,7 @@ function imageBytesMatchType(type, bytes) {
   return false;
 }
 
-function imageUploadName(originalName, type) {
+function safeUploadStem(originalName, fallback) {
   const originalExtension = extname(originalName);
   const originalStem = originalName.slice(0, originalName.length - originalExtension.length);
   const sanitizedStem = originalStem
@@ -443,14 +507,30 @@ function imageUploadName(originalName, type) {
     safeStem += character;
     safeStemBytes += characterBytes;
   }
-  return `${randomUUID()}-${safeStem || "image"}${IMAGE_TYPES.get(type)}`;
+  return safeStem || fallback;
 }
 
-function isSameOrigin(req) {
-  const host = req.headers.host || "";
-  if (!/^(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(host)) return false;
-  const origin = req.headers.origin;
-  return !origin || origin === `http://${host}`;
+function imageUploadName(originalName, type) {
+  return `${randomUUID()}-${safeUploadStem(originalName, "image")}${IMAGE_TYPES.get(type)}`;
+}
+
+function fileUploadName(originalName) {
+  const extension = extname(originalName).normalize("NFKC");
+  const safeExtension = /^\.[\p{L}\p{N}]{1,16}$/u.test(extension) ? extension : "";
+  return `${randomUUID()}-${safeUploadStem(originalName, "file")}${safeExtension}`;
+}
+
+async function persistUpload(bytes, name) {
+  await mkdir(UPLOAD_DIR, { recursive: true, mode: 0o700 });
+  await chmod(UPLOAD_DIR, 0o700);
+  const path = join(UPLOAD_DIR, name);
+  try {
+    await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if (error.code !== "EEXIST") await unlink(path).catch(() => {});
+    throw error;
+  }
+  return path;
 }
 
 class CodexBridge {
@@ -518,7 +598,11 @@ class CodexBridge {
       });
       this.notify("initialized", {});
       this.ready = true;
-      broadcast("status", { ready: true, message: "Codex app-server connected" });
+      broadcast("status", {
+        ready: true,
+        message: "Codex app-server connected",
+        provider: "codex",
+      });
     } catch (error) {
       if (this.proc === proc) {
         this.proc = null;
@@ -608,7 +692,11 @@ class CodexBridge {
     this.pending.clear();
     pendingServerRequests.clear();
     broadcast("pending-interactions", { requests: [] });
-    broadcast("status", { ready: false, message: error.message });
+    broadcast("status", {
+      ready: false,
+      message: error.message,
+      provider: "codex",
+    });
   }
 
   write(message) {
@@ -665,9 +753,86 @@ class CodexBridge {
 }
 
 const bridge = new CodexBridge();
+const webData = new WebDataStore(WEB_DATA_DIR);
+const claudeProvider = new ClaudeProvider({
+  binary: CLAUDE_BIN,
+  cacheDir: CLAUDE_DATA_DIR,
+  claudeConfigDir: CLAUDE_CONFIG_DIR,
+  emit: (message) => broadcast("rpc", message),
+  log: (message) => broadcast("log", { level: "stderr", message }),
+});
+const remoteAccess = REMOTE_ENABLED
+  ? new TailscaleRemoteAccess({
+      localPort: PORT,
+      remotePort: REMOTE_PORT,
+      binary: TAILSCALE_BIN,
+      expectedUser: REMOTE_USER,
+      onOutput: (text, stream) => {
+        (stream === "stderr" ? process.stderr : process.stdout).write(text);
+      },
+      onUnexpectedExit: (error) => {
+        console.error(`Remote access stopped: ${error.message}`);
+        void shutdown(1);
+      },
+    })
+  : null;
+
+function providerForRequest(method, params = {}) {
+  if (params.provider === "claude") return "claude";
+  if (params.provider === "codex") return "codex";
+  if (typeof params.threadId === "string" && params.threadId.startsWith("claude:")) {
+    return "claude";
+  }
+  return method === "thread/list" ? "all" : "codex";
+}
+
+function withoutProvider(params = {}) {
+  const copy = { ...params };
+  delete copy.provider;
+  return copy;
+}
+
+async function providerRpc(method, params = {}) {
+  const provider = providerForRequest(method, params);
+  if (provider === "claude") {
+    return claudeProvider.rpc(method, withoutProvider(params));
+  }
+  await bridge.start();
+  return bridge.rpc(method, applyCliThreadDefaults(method, withoutProvider(params)));
+}
+
+async function listAllThreads(params = {}) {
+  const results = await Promise.allSettled([
+    providerRpc("thread/list", { ...params, provider: "codex" }),
+    claudeProvider.rpc("thread/list", withoutProvider(params)),
+  ]);
+  const codex = results[0].status === "fulfilled" ? results[0].value : { data: [] };
+  const claude = results[1].status === "fulfilled" ? results[1].value : { data: [] };
+  if (results.every((result) => result.status === "rejected")) {
+    throw results[0].reason || results[1].reason;
+  }
+  return {
+    data: [
+      ...(codex.data || []).map((thread) => ({
+        ...thread,
+        provider: thread.provider || "codex",
+        providerThreadId: thread.providerThreadId || thread.id,
+      })),
+      ...(claude.data || []),
+    ].sort(
+      (left, right) => (right.updatedAt || 0) - (left.updatedAt || 0),
+    ),
+    nextCursor: null,
+  };
+}
 
 async function serveStatic(req, res, url) {
-  const requestPath = url.pathname === "/" ? "/index.html" : url.pathname;
+  const requestPath =
+    url.pathname === "/"
+      ? "/index.html"
+      : /^\/share\/[0-9a-f-]{36}$/i.test(url.pathname)
+        ? "/share.html"
+        : url.pathname;
   const decoded = decodeURIComponent(requestPath);
   const filePath = resolve(PUBLIC_DIR, `.${decoded.startsWith("/") ? decoded : `/${decoded}`}`);
   const relativePath = relative(PUBLIC_DIR, filePath);
@@ -699,13 +864,15 @@ async function serveStatic(req, res, url) {
 
 const server = createServer(async (req, res) => {
   try {
-    const url = new URL(req.url || "/", `http://${req.headers.host || `${HOST}:${PORT}`}`);
-
-    if (url.pathname.startsWith("/api/") && !isSameOrigin(req)) {
-      return json(res, 403, { error: "Only same-origin localhost requests are allowed" });
+    const access = authorizeRequest(req, remoteAccess?.authorization());
+    if (!access.ok) {
+      return json(res, 403, { error: "This request is not allowed" });
     }
 
+    const url = new URL(req.url || "/", `http://${req.headers.host || `${HOST}:${PORT}`}`);
+
     if (req.method === "GET" && url.pathname === "/api/events") {
+      const claudeStatus = await claudeProvider.status();
       res.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
@@ -715,6 +882,11 @@ const server = createServer(async (req, res) => {
       res.write(`retry: 1000\nevent: status\ndata: ${JSON.stringify({
         ready: bridge.ready,
         message: bridge.ready ? "connected" : "starting",
+        providers: {
+          codex: { ready: bridge.ready, binary: CODEX_BIN },
+          claude: claudeStatus,
+        },
+        remote: remoteAccess?.status() || { enabled: false, ready: false, url: null },
       })}\n\n`);
       res.write(
         ssePayload("pending-interactions", {
@@ -727,32 +899,104 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/status") {
+      const claudeStatus = await claudeProvider.status();
       return json(res, 200, {
         ready: bridge.ready,
         codexBin: CODEX_BIN,
+        claudeBin: CLAUDE_BIN,
+        providers: {
+          codex: { ready: bridge.ready, binary: CODEX_BIN },
+          claude: claudeStatus,
+        },
         cwd: DEFAULT_CWD,
         port: PORT,
+        remote: remoteAccess?.status() || { enabled: false, ready: false, url: null },
       });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/projects") {
+      return json(res, 200, await webData.workspace());
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/projects") {
+      const project = await webData.createProject(await readJson(req));
+      return json(res, 201, { project });
+    }
+
+    const projectRoute = url.pathname.match(
+      /^\/api\/projects\/([0-9a-f]{8}-[0-9a-f-]{27})$/i,
+    );
+    if (projectRoute && req.method === "PATCH") {
+      const project = await webData.updateProject(projectRoute[1], await readJson(req));
+      return json(res, 200, { project });
+    }
+    if (projectRoute && req.method === "DELETE") {
+      await webData.deleteProject(projectRoute[1]);
+      return json(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/project-threads") {
+      const body = await readJson(req);
+      const assignment = await webData.assignThread(body.threadId, body.projectId);
+      return json(res, 200, assignment);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/shares") {
+      const threadId = url.searchParams.get("threadId");
+      if (!threadId) return json(res, 400, { error: "threadId is required" });
+      return json(res, 200, { share: await webData.findShareForThread(threadId) });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/shares") {
+      const body = await readJson(req);
+      const threadId = String(body.threadId || "").trim();
+      if (!threadId) return json(res, 400, { error: "threadId is required" });
+      const result = await providerRpc("thread/read", {
+        threadId,
+        includeTurns: true,
+      });
+      const thread = result?.thread;
+      if (!thread) return json(res, 404, { error: "Conversation not found" });
+      const snapshot = sharedConversationSnapshot(thread);
+      if (!snapshot.messages.length) {
+        return json(res, 409, { error: "Conversation has no messages to share" });
+      }
+      const share = await webData.upsertShare(threadId, snapshot);
+      return json(res, 201, { share });
+    }
+
+    const shareRoute = url.pathname.match(
+      /^\/api\/shares\/([0-9a-f]{8}-[0-9a-f-]{27})$/i,
+    );
+    if (shareRoute && req.method === "GET") {
+      const share = await webData.getShare(shareRoute[1]);
+      if (!share) return json(res, 404, { error: "Shared conversation not found" });
+      return json(res, 200, { share });
+    }
+    if (shareRoute && req.method === "DELETE") {
+      await webData.deleteShare(shareRoute[1]);
+      return json(res, 200, { ok: true });
     }
 
     if (req.method === "POST" && url.pathname === "/api/uploads/images") {
       const type = requestImageType(req);
-      const originalName = requestImageName(req);
-      const bytes = await readImage(req);
+      const originalName = requestUploadName(req);
+      const bytes = await readUpload(req);
       if (!imageBytesMatchType(type, bytes)) {
         return json(res, 415, { error: "Image bytes do not match Content-Type" });
       }
 
-      await mkdir(UPLOAD_DIR, { recursive: true, mode: 0o700 });
-      await chmod(UPLOAD_DIR, 0o700);
       const name = imageUploadName(originalName, type);
-      const path = join(UPLOAD_DIR, name);
-      try {
-        await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
-      } catch (error) {
-        if (error.code !== "EEXIST") await unlink(path).catch(() => {});
-        throw error;
-      }
+      const path = await persistUpload(bytes, name);
+      return json(res, 201, { path, name, size: bytes.length, type });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/uploads/files") {
+      const type = requestUploadType(req);
+      const originalName = requestUploadName(req);
+      const bytes = await readUpload(req);
+      const name = fileUploadName(originalName);
+      const path = await persistUpload(bytes, name);
       return json(res, 201, { path, name, size: bytes.length, type });
     }
 
@@ -761,9 +1005,12 @@ const server = createServer(async (req, res) => {
       if (!RPC_ALLOWLIST.has(body.method)) {
         return json(res, 403, { error: `RPC method is not allowed: ${body.method}` });
       }
-      await bridge.start();
       const params = applyCliThreadDefaults(body.method, body.params || {});
-      const result = await bridge.rpc(body.method, params);
+      const provider = providerForRequest(body.method, params);
+      const result =
+        body.method === "thread/list" && provider === "all"
+          ? await listAllThreads(params)
+          : await providerRpc(body.method, params);
       return json(res, 200, { result });
     }
 
@@ -820,21 +1067,41 @@ server.on("error", (error) => {
 });
 
 server.listen(PORT, HOST, async () => {
-  const url = `http://${HOST}:${PORT}`;
-  console.log(`Codex Web is available at ${url}`);
+  const localUrl = `http://${HOST}:${PORT}`;
+  let browserUrl = localUrl;
+  console.log(`Codex Web is available locally at ${localUrl}`);
   console.log(`Working directory default: ${DEFAULT_CWD}`);
 
   bridge.start().catch((error) => {
     console.error(`Could not connect to Codex app-server: ${error.message}`);
   });
 
+  if (remoteAccess) {
+    console.log("Starting private Tailscale remote access…");
+    try {
+      const remote = await remoteAccess.start();
+      browserUrl = remote.url;
+      console.log(`Codex Web is available privately at ${remote.url}`);
+      console.log("Only the authorized Tailscale account can open this URL.");
+      if (!remote.secureContext) {
+        console.warn(
+          "Private HTTP is active. Android Chrome may ask for microphone permission each time; use the keyboard microphone if browser Dictation is blocked.",
+        );
+      }
+    } catch (error) {
+      console.error(`Could not start remote access: ${error.message}`);
+      await shutdown(1);
+      return;
+    }
+  }
+
   if (SHOULD_OPEN) {
     const command =
       process.platform === "darwin"
-        ? ["open", [url]]
+        ? ["open", [browserUrl]]
         : process.platform === "win32"
-          ? ["cmd", ["/c", "start", "", url]]
-          : ["xdg-open", [url]];
+          ? ["cmd", ["/c", "start", "", browserUrl]]
+          : ["xdg-open", [browserUrl]];
     const opener = spawn(command[0], command[1], { detached: true, stdio: "ignore" });
     opener.on("error", () => {});
     opener.unref();
@@ -846,12 +1113,28 @@ const heartbeat = setInterval(() => {
 }, 20_000);
 heartbeat.unref();
 
-function shutdown() {
+let shuttingDown = false;
+
+async function shutdown(exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   clearInterval(heartbeat);
+  const forceExit = setTimeout(() => process.exit(exitCode), 3_500);
+  forceExit.unref();
+  const serverClosed = new Promise((resolveClosed) => {
+    server.close(resolveClosed);
+  });
+  for (const client of clients) client.end();
+  clients.clear();
+  server.closeIdleConnections?.();
+  server.closeAllConnections?.();
+  await remoteAccess?.stop();
   bridge.stop();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 1500).unref();
+  await claudeProvider.stop();
+  await serverClosed;
+  clearTimeout(forceExit);
+  process.exit(exitCode);
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown(0));
+process.on("SIGTERM", () => void shutdown(0));
