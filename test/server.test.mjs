@@ -228,6 +228,7 @@ test("server starts with a fake Codex bridge and enforces local security boundar
 
   for (const [method, params] of [
     ["collaborationMode/list", {}],
+    ["thread/settings/update", { threadId: "test-thread", collaborationMode: null }],
     ["thread/goal/get", { threadId: "test-thread" }],
     ["thread/goal/set", { threadId: "test-thread", objective: "هدف تست", status: "active" }],
     ["thread/goal/clear", { threadId: "test-thread" }],
@@ -274,6 +275,7 @@ test("server starts with a fake Codex bridge and enforces local security boundar
   assert.deepEqual(compactStart?.params, { threadId: "test-thread" });
   for (const method of [
     "collaborationMode/list",
+    "thread/settings/update",
     "thread/goal/get",
     "thread/goal/set",
     "thread/goal/clear",
