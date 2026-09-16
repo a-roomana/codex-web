@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
+import { listAgentCommandsCached } from "./agent-commands.mjs";
 import { ClaudeProvider } from "./providers/claude-provider.mjs";
 import {
   authorizeRequest,
@@ -60,7 +61,10 @@ Environment:
   TAILSCALE_BIN             Tailscale executable (default: auto-detected)
   CODEX_BIN                 Codex executable (default: codex)
   CLAUDE_BIN                Claude Code executable (default: claude)
-  CLAUDE_CONFIG_DIR         Claude Code config/session directory (default: ~/.claude)
+  CODEX_HOME                Codex config directory, source of Codex skills and
+                            prompts (default: ~/.codex)
+  CLAUDE_CONFIG_DIR         Claude Code config/session directory, source of
+                            Claude skills and commands (default: ~/.claude)
   CLAUDE_WEB_DATA_DIR       Claude Web conversation metadata directory`);
   process.exit(0);
 }
@@ -135,6 +139,7 @@ const RPC_ALLOWLIST = new Set([
   "thread/read",
   "thread/start",
   "thread/resume",
+  "thread/settings/update",
   "thread/archive",
   "thread/unarchive",
   "thread/compact/start",
@@ -911,6 +916,19 @@ const server = createServer(async (req, res) => {
         cwd: DEFAULT_CWD,
         port: PORT,
         remote: remoteAccess?.status() || { enabled: false, ready: false, url: null },
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/agent-commands") {
+      const provider = url.searchParams.get("provider") === "claude" ? "claude" : "codex";
+      const requestedCwd = url.searchParams.get("cwd") || "";
+      const cwd = isAbsolute(requestedCwd) ? resolve(requestedCwd) : DEFAULT_CWD;
+      const commands = await listAgentCommandsCached({ cwd, provider });
+      return json(res, 200, {
+        // `path` stays on the server: the composer only needs name and copy.
+        commands: commands.map(({ path, ...command }) => command),
+        cwd,
+        provider,
       });
     }
 

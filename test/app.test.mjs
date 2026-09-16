@@ -193,6 +193,16 @@ test("submitted user message stays visible while the assistant is streaming", as
             exitCode: 0,
           },
           {
+            type: "plan",
+            id: "plan-old",
+            text: "## برنامهٔ اجرا\n\n- گام اول",
+          },
+          {
+            type: "plan",
+            id: "plan-old-duplicate",
+            text: "## برنامهٔ اجرا\n\n- گام اول",
+          },
+          {
             type: "agentMessage",
             id: "agent-old",
             text: "پاسخ قبلی",
@@ -342,6 +352,14 @@ test("submitted user message stays visible while the assistant is streaming", as
   assert.equal(document.querySelector("[data-item-id='reasoning-old'] summary").textContent, "تفکر");
   assert.equal(document.querySelector("[data-item-id='reasoning-empty']").hidden, true);
   assert.equal(document.querySelector("[data-item-id='command-old']").classList.contains("completed"), true);
+  const plan = document.querySelector("[data-item-id='plan-old']");
+  assert.equal(plan.closest(".turn-process"), null);
+  assert.equal(plan.dataset.phase, "plan");
+  assert.equal(plan.getAttribute("aria-label"), "برنامه");
+  assert.equal(plan.querySelector("h2").textContent, "برنامهٔ اجرا");
+  assert.match(plan.textContent, /گام اول/);
+  assert.equal(document.querySelector("[data-item-id='plan-old-duplicate']"), null);
+  assert.equal(document.querySelectorAll("[data-phase='plan']").length, 1);
 
   const prompt = document.querySelector("#prompt");
   prompt.setSelectionRange = (start, end) => {

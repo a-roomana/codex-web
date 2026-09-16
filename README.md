@@ -325,6 +325,28 @@ only the commands listed above, not every slash command available in the Codex
 or Claude terminal interfaces. These commands are handled by Codex Web rather
 than passed through to the selected provider.
 
+### Skills and prompt files
+
+Below the built-in commands, the menu also lists the skills and prompt files the
+active provider can expand, discovered from disk on every provider or working
+directory change:
+
+| Provider | User scope | Project scope (conversation working directory) |
+| --- | --- | --- |
+| Codex | `~/.codex/skills/<name>/SKILL.md`, `~/.codex/prompts/<name>.md` | `.codex/skills/<name>/SKILL.md`, `.codex/prompts/<name>.md` |
+| Claude | `~/.claude/skills/<name>/SKILL.md`, `~/.claude/commands/<name>.md` | `.claude/skills/<name>/SKILL.md`, `.claude/commands/<name>.md` |
+
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` move the user-scope directories. A
+project-scope entry shadows a user-scope entry with the same name, and built-in
+commands always win over both. Names must match `[a-z][a-z0-9-]*`; namespaced
+command files in sub-directories are not listed.
+
+Unlike the built-in commands, these are not executed by Codex Web: selecting one
+completes it in the composer so arguments can be added, and sending it passes
+the text (for example `/weekly-report full`) to the CLI, which owns the
+expansion. Create a skill while Codex Web is running and it shows up the next
+time the menu opens; no restart is needed.
+
 ## Parallel conversations
 
 One Codex Web process can run multiple Codex and Claude conversations

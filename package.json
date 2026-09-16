@@ -15,6 +15,7 @@
     "codex-web": "./server.mjs"
   },
   "files": [
+    "agent-commands.mjs",
     "public",
     "providers",
     "remote-access.mjs",

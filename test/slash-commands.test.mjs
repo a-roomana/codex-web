@@ -203,11 +203,27 @@ test("slash commands are accessible and stay isolated from model turns", async (
     turns: [],
   };
   const rpcRequests = [];
+  const agentCommandRequests = [];
   let resolveCompactResponse;
 
   globalThis.fetch = async (path, options = {}) => {
     if (path === "/api/status") {
       return jsonResponse({ ready: true, cwd: "/workspace" });
+    }
+    if (path.startsWith("/api/agent-commands")) {
+      agentCommandRequests.push(path);
+      return jsonResponse({
+        commands: [
+          {
+            description: "گزارش هفتگی کارها",
+            kind: "skill",
+            name: "weekly-report",
+            scope: "user",
+          },
+        ],
+        cwd: "/workspace",
+        provider: "codex",
+      });
     }
     if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
 
@@ -462,4 +478,64 @@ test("slash commands are accessible and stay isolated from model turns", async (
     pathTurn.params.input[0].text,
     "/tmp",
   );
+
+  // Let the path prompt finish so the composer is idle again.
+  FakeEventSource.latest.emit("rpc", {
+    method: "turn/completed",
+    params: {
+      threadId: "unexpected-thread",
+      turn: { id: "unexpected-turn", status: "completed" },
+    },
+  });
+  await waitFor(
+    () => document.querySelector("#stop-turn").classList.contains("hidden"),
+    "the conversation stayed busy",
+  );
+
+  // Skills and prompt files come from the CLI configuration directories, so the
+  // menu lists them and the composer hands them to the agent as prompt text.
+  typePrompt(window, prompt, "/week");
+  await waitFor(
+    () => options.querySelector("[data-slash-command='weekly-report']"),
+    "the discovered skill was not listed",
+  );
+  assert.ok(agentCommandRequests.some((path) => path.includes("provider=codex")));
+  const skillOption = options.querySelector("[data-slash-command='weekly-report']");
+  assert.match(skillOption.textContent, /گزارش هفتگی کارها/);
+  assert.match(skillOption.querySelector(".slash-command-kind").textContent, /مهارت/);
+
+  const turnsBeforeSkill = rpcRequests.filter(
+    (request) => request.method === "turn/start",
+  ).length;
+  pressKey(window, prompt, "Enter");
+  assert.equal(prompt.value, "/weekly-report ");
+  assert.equal(
+    rpcRequests.filter((request) => request.method === "turn/start").length,
+    turnsBeforeSkill,
+    "completing a skill name must not send anything yet",
+  );
+
+  typePrompt(window, prompt, "/weekly-report full");
+  pressKey(window, prompt, "Enter");
+  await waitFor(
+    () =>
+      rpcRequests.filter((request) => request.method === "turn/start").length >
+      turnsBeforeSkill,
+    "the skill prompt was not sent to the agent",
+  );
+  const skillTurn = rpcRequests
+    .filter((request) => request.method === "turn/start")
+    .at(-1);
+  assert.equal(skillTurn.params.input[0].text, "/weekly-report full");
+  await waitFor(
+    () =>
+      [...document.querySelectorAll(".message-row.user")].some((row) =>
+        row.textContent.includes("/weekly-report full"),
+      ),
+    "the skill prompt was not shown in the conversation",
+  );
+  // Let the queued rendering frames run before the DOM globals are restored.
+  for (let frame = 0; frame < 3; frame += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 });
