@@ -2251,7 +2251,7 @@ body.sidebar-collapsed .menu-button {
   width: 100%;
   min-height: 48px;
   padding: 7px 9px;
-  grid-template-columns: minmax(92px, auto) 1fr;
+  grid-template-columns: minmax(92px, auto) 1fr auto;
   align-items: center;
   gap: 12px;
   color: var(--text);
@@ -2300,6 +2300,16 @@ body.sidebar-collapsed .menu-button {
 
 .slash-command-option[aria-disabled="true"] .slash-command-copy small {
   color: #b9a98c;
+}
+
+.slash-command-kind {
+  padding: 2px 7px;
+  color: var(--muted-2);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  white-space: nowrap;
 }
 
 .slash-command-empty {

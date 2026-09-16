@@ -89,7 +89,12 @@ const SLASH_COMMANDS = [
     label: "راهنمای فرمان‌ها",
     description: "نمایش فهرست فرمان‌هایی که این رابط پشتیبانی می‌کند",
   },
-].map((command) => ({ ...command, token: `/${command.name}` }));
+].map((command) => ({ ...command, kind: "builtin", token: `/${command.name}` }));
+
+const BUILTIN_SLASH_COMMAND_NAMES = new Set(SLASH_COMMANDS.map((command) => command.name));
+// How long a fetched skill/prompt list stays trusted before the composer asks
+// the server again. Keeps newly created skills reachable without polling.
+const AGENT_COMMANDS_TTL_MS = 15_000;
 
 const COMMON_ABSOLUTE_PATH_ROOTS = new Set([
   "Applications",
@@ -392,6 +397,10 @@ const state = {
   },
   queueProcessing: new Set(),
   forceNextScroll: false,
+  agentCommands: [],
+  agentCommandsFetchedAt: 0,
+  agentCommandsKey: "",
+  agentCommandsPending: null,
   attachmentUploadsByDraft: new Map(),
   interactionSubmitting: false,
   scrollFrame: null,
@@ -546,16 +555,101 @@ function showError(error, context = "") {
   toast(`${context ? `${context}: ` : ""}${detail}`, "error");
 }
 
+function composerCwd() {
+  if (state.currentThreadId) {
+    return (
+      state.threadRuntime.get(state.currentThreadId)?.cwd ||
+      state.currentThread?.cwd ||
+      state.settings.cwd
+    );
+  }
+  return currentProject()?.cwd || state.settings.cwd;
+}
+
+function agentCommandsKey(provider = effectiveProvider(), cwd = composerCwd()) {
+  return `${provider}|${cwd || ""}`;
+}
+
+// Skills and prompt files live next to the CLI, not in this interface, so the
+// composer asks the server for the current provider/cwd pair instead of
+// hardcoding a list. Failures stay silent: built-in commands must keep working.
+async function refreshAgentCommands({ force = false } = {}) {
+  const provider = effectiveProvider();
+  const cwd = composerCwd();
+  const key = agentCommandsKey(provider, cwd);
+  const fresh =
+    state.agentCommandsKey === key &&
+    Date.now() - state.agentCommandsFetchedAt < AGENT_COMMANDS_TTL_MS;
+  if (!force && fresh) return state.agentCommands;
+  if (state.agentCommandsPending?.key === key) return state.agentCommandsPending.promise;
+
+  const promise = (async () => {
+    try {
+      const query = new URLSearchParams({ cwd: cwd || "", provider });
+      const data = await api(`/api/agent-commands?${query}`, { headers: {} });
+      const commands = (Array.isArray(data.commands) ? data.commands : [])
+        .filter(
+          (command) =>
+            /^[a-z][a-z0-9-]*$/i.test(String(command?.name || "")) &&
+            !BUILTIN_SLASH_COMMAND_NAMES.has(String(command.name).toLowerCase()),
+        )
+        .map((command) => ({
+          description:
+            String(command.description || "").trim() ||
+            (command.kind === "prompt" ? "پرامپت سفارشی" : "مهارت سفارشی"),
+          kind: command.kind === "prompt" ? "prompt" : "skill",
+          label: String(command.name),
+          name: String(command.name).toLowerCase(),
+          provider,
+          scope: command.scope === "project" ? "project" : "user",
+          token: `/${String(command.name).toLowerCase()}`,
+        }));
+      if (agentCommandsKey() !== key) return state.agentCommands;
+      state.agentCommands = commands;
+      state.agentCommandsKey = key;
+      state.agentCommandsFetchedAt = Date.now();
+      if (!elements.slashCommandMenu.classList.contains("hidden")) {
+        updateSlashCommandMenu();
+      }
+      return commands;
+    } catch {
+      if (agentCommandsKey() === key) {
+        state.agentCommandsKey = key;
+        state.agentCommandsFetchedAt = Date.now();
+      }
+      return state.agentCommands;
+    } finally {
+      if (state.agentCommandsPending?.key === key) state.agentCommandsPending = null;
+    }
+  })();
+  state.agentCommandsPending = { key, promise };
+  return promise;
+}
+
+function agentCommandsForProvider(provider = effectiveProvider()) {
+  if (state.agentCommandsKey !== agentCommandsKey(provider)) return [];
+  return state.agentCommands;
+}
+
+function isAgentCommand(command) {
+  return command?.kind === "skill" || command?.kind === "prompt";
+}
+
+function allSlashCommands(provider = effectiveProvider()) {
+  return [...SLASH_COMMANDS, ...agentCommandsForProvider(provider)];
+}
+
 function slashCommandByName(name) {
-  return SLASH_COMMANDS.find((command) => command.name === name) || null;
+  return allSlashCommands().find((command) => command.name === name) || null;
 }
 
 function slashCommandSupportsProvider(command, provider = effectiveProvider()) {
+  if (isAgentCommand(command)) return command.provider === provider;
   return !command.capability || providerSupports(command.capability, provider);
 }
 
 function slashCommandsForProvider(provider = effectiveProvider()) {
-  return SLASH_COMMANDS.filter((command) =>
+  return allSlashCommands(provider).filter((command) =>
     slashCommandSupportsProvider(command, provider),
   );
 }
@@ -567,8 +661,10 @@ function parseSlashCommand(text) {
   const token = candidate.match(/^\/\S*/)?.[0] || "/";
   const singlePathPart = token.slice(1);
   const commandNameMatch = singlePathPart.match(/^([a-z][a-z0-9-]*)$/i);
+  const commandName = commandNameMatch ? commandNameMatch[1].toLowerCase() : "";
   const knownCodexCommand = Boolean(
-    commandNameMatch && KNOWN_CODEX_COMMAND_NAMES.has(commandNameMatch[1].toLowerCase()),
+    commandName &&
+      (KNOWN_CODEX_COMMAND_NAMES.has(commandName) || slashCommandByName(commandName)),
   );
   const pathLike =
     !knownCodexCommand &&
@@ -594,6 +690,16 @@ function slashCommandAvailability(command) {
       available: false,
       reason: `فرمان ${command.token} برای گفتگوهای ${providerLabel(effectiveProvider())} پشتیبانی نمی‌شود.`,
     };
+  }
+  // Skills and prompt files are expanded by the CLI itself, so the only
+  // requirement is a live connection to send the prompt through.
+  if (isAgentCommand(command)) {
+    return state.connected
+      ? { available: true, reason: "" }
+      : {
+          available: false,
+          reason: `${providerLabel(effectiveProvider())} هنوز متصل نیست.`,
+        };
   }
   if (state.slashCommandExecuting && command.name === "compact") {
     return { available: false, reason: "یک فرمان دیگر در حال اجراست." };
@@ -650,6 +756,7 @@ function updateSlashCommandMenu({ keepActiveCommand = true } = {}) {
     closeSlashCommandMenu();
     return;
   }
+  void refreshAgentCommands();
 
   const previousActive = keepActiveCommand
     ? state.slashFilteredCommands[state.slashActiveIndex]?.name
@@ -691,6 +798,13 @@ function updateSlashCommandMenu({ keepActiveCommand = true } = {}) {
       : `${command.description} — ${availability.reason}`;
     copy.append(label, description);
     option.append(name, copy);
+    const badge = slashCommandBadge(command);
+    if (badge) {
+      const kind = document.createElement("span");
+      kind.className = "slash-command-kind";
+      kind.textContent = badge;
+      option.append(kind);
+    }
     elements.slashCommandOptions.append(option);
   });
 
@@ -709,6 +823,12 @@ function updateSlashCommandMenu({ keepActiveCommand = true } = {}) {
     : "فرمانی پیدا نشد";
 }
 
+function slashCommandBadge(command) {
+  if (!isAgentCommand(command)) return "";
+  const kind = command.kind === "prompt" ? "پرامپت" : "مهارت";
+  return command.scope === "project" ? `${kind} پروژه` : kind;
+}
+
 function moveSlashCommandSelection(direction) {
   const count = state.slashFilteredCommands.length;
   if (!count) return;
@@ -719,8 +839,11 @@ function moveSlashCommandSelection(direction) {
 }
 
 function replacePromptWithSlashCommand(command) {
-  elements.prompt.value = command.token;
-  elements.prompt.setSelectionRange(command.token.length, command.token.length);
+  // Skills and prompt files take arguments, so completing one leaves the caret
+  // after a space instead of turning into a ready-to-run local command.
+  const text = isAgentCommand(command) ? `${command.token} ` : command.token;
+  elements.prompt.value = text;
+  elements.prompt.setSelectionRange(text.length, text.length);
   state.slashDismissedValue = null;
   saveCurrentDraft();
   resizePrompt();
@@ -730,6 +853,22 @@ function replacePromptWithSlashCommand(command) {
 async function activateHighlightedSlashCommand() {
   const command = state.slashFilteredCommands[state.slashActiveIndex];
   if (!command || elements.slashCommandMenu.classList.contains("hidden")) return false;
+  if (isAgentCommand(command)) {
+    const availability = slashCommandAvailability(command);
+    if (!availability.available) {
+      toast(availability.reason, "warning");
+      return true;
+    }
+    // A fully typed name means "run it"; anything shorter only completes the
+    // name so arguments can still be added before sending.
+    if (elements.prompt.value.trim().toLowerCase() === command.token) {
+      closeSlashCommandMenu();
+      await sendPrompt();
+      return true;
+    }
+    replacePromptWithSlashCommand(command);
+    return true;
+  }
   replacePromptWithSlashCommand(command);
   await executeSlashCommand(command);
   return true;
@@ -1285,6 +1424,13 @@ function showSlashHelp() {
     const description = document.createElement("span");
     description.textContent = command.description;
     item.append(token, description);
+    const badge = slashCommandBadge(command);
+    if (badge) {
+      const kind = document.createElement("span");
+      kind.className = "slash-command-kind";
+      kind.textContent = badge;
+      item.append(kind);
+    }
     list.append(item);
   }
   card.append(list);
@@ -1422,6 +1568,8 @@ async function executeSlashCommand(command) {
 async function handleSlashCommand(text) {
   const parsed = parseSlashCommand(text);
   if (!parsed) return false;
+  // Skills and prompt files belong to the CLI: leave them in the prompt text.
+  if (isAgentCommand(parsed.command)) return false;
   if (!parsed.command) {
     toast(
       `فرمان ${parsed.token} در Codex Web پشتیبانی نمی‌شود؛ برای دیدن فهرست فقط / را تایپ کنید.`,
@@ -1824,7 +1972,8 @@ function updateComposerControls() {
   const uploadingAttachments = attachmentUploadsForDraft();
   const uploading = uploadingAttachments > 0;
   const text = elements.prompt.value.trim();
-  const slash = parseSlashCommand(elements.prompt.value);
+  const parsedSlash = parseSlashCommand(elements.prompt.value);
+  const slash = isAgentCommand(parsedSlash?.command) ? null : parsedSlash;
   const slashCanRun =
     slash &&
     (slash.command
@@ -2000,13 +2149,10 @@ function updateSettingsUi() {
   state.models = state.modelsByProvider[provider] || [];
   const selectedModel = state.settings.modelByProvider[provider] || "";
   elements.cwdInput.value = state.settings.cwd;
-  const composerCwd = state.currentThreadId
-    ? state.threadRuntime.get(state.currentThreadId)?.cwd ||
-      state.currentThread?.cwd ||
-      state.settings.cwd
-    : currentProject()?.cwd || state.settings.cwd;
-  elements.cwdLabel.textContent = shortPath(composerCwd, 38);
-  elements.cwdLabel.title = composerCwd;
+  const cwd = composerCwd();
+  elements.cwdLabel.textContent = shortPath(cwd, 38);
+  elements.cwdLabel.title = cwd;
+  void refreshAgentCommands();
   elements.providerSelect.value = provider;
   renderModelOptions(state.models, selectedModel, provider);
   elements.effortSelect.value = state.settings.effort;
@@ -6113,6 +6259,7 @@ async function initialize() {
     await Promise.allSettled([
       loadModels(),
       loadCollaborationModes(),
+      refreshAgentCommands({ force: true }),
       refreshThreads(),
       hydrateThreadFromUrl(),
       refreshRateLimits({ force: true, silent: true }),
