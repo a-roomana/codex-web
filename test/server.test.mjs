@@ -152,6 +152,28 @@ test("server starts with a fake Codex bridge and enforces local security boundar
   assert.equal(status.ready, true);
   assert.equal(status.cwd, temporaryRoot);
 
+  await mkdir(join(codexHome, "skills", "weekly-report"), { recursive: true });
+  await writeFile(
+    join(codexHome, "skills", "weekly-report", "SKILL.md"),
+    "---\nname: weekly-report\ndescription: گزارش هفتگی\n---\n",
+  );
+  const commandsResponse = await fetch(
+    `${baseUrl}/api/agent-commands?provider=codex&cwd=${encodeURIComponent(temporaryRoot)}`,
+  );
+  assert.equal(commandsResponse.status, 200);
+  const commands = await commandsResponse.json();
+  assert.equal(commands.cwd, temporaryRoot);
+  assert.deepEqual(
+    commands.commands.map(({ name, kind, scope }) => ({ name, kind, scope })),
+    [{ name: "weekly-report", kind: "skill", scope: "user" }],
+  );
+
+  const relativeCwdResponse = await fetch(
+    `${baseUrl}/api/agent-commands?provider=claude&cwd=../escape`,
+  );
+  assert.equal(relativeCwdResponse.status, 200);
+  assert.equal((await relativeCwdResponse.json()).cwd, temporaryRoot);
+
   const pageResponse = await fetch(`${baseUrl}/`);
   assert.equal(pageResponse.status, 200);
   assert.match(await pageResponse.text(), /Codex Web/);
