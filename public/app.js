@@ -381,6 +381,7 @@ const state = {
   optimisticUserMessages: new Map(),
   pendingInteractions: new Map(),
   pendingGoals: new Map(),
+  planModeSavingKeys: new Set(),
   pendingTurnStarts: 0,
   postponedInteractions: new Set(),
   promptQueues: new Map(),
@@ -2781,9 +2782,10 @@ function updateComposerModeUi() {
   const provider = effectiveProvider();
   const planSupported = providerSupportsPlanMode(provider);
   const goalSupported = providerSupportsGoalMode(provider);
+  const planSaving = state.planModeSavingKeys.has(draftKey());
   const plan = planSupported && composerModeFor() === "plan";
   const goal = goalSupported ? goalFor() : null;
-  elements.planModeOption.disabled = !planSupported;
+  elements.planModeOption.disabled = !planSupported || planSaving;
   elements.goalModeOption.disabled = !goalSupported;
   elements.planModeOption.setAttribute("aria-checked", String(plan));
   elements.composerToolsNote.classList.toggle(
@@ -2809,18 +2811,46 @@ function toggleComposerToolsMenu() {
   elements.composerTools.setAttribute("aria-expanded", String(opening));
 }
 
-function togglePlanMode() {
+async function togglePlanMode() {
   const provider = effectiveProvider();
   if (!providerSupportsPlanMode(provider)) {
     toast(`Plan mode برای ${providerLabel(provider)} در دسترس نیست.`, "warning");
     return false;
   }
   const key = draftKey();
+  if (state.planModeSavingKeys.has(key)) return false;
   const plan = composerModeFor(key) !== "plan";
+  const collaborationMode = plan && provider === "codex"
+    ? planCollaborationMode()
+    : provider === "codex"
+      ? defaultCollaborationMode()
+      : null;
+  if (plan && provider === "codex" && !collaborationMode) {
+    toast("برای Plan mode ابتدا یک مدل Codex انتخاب یا بارگذاری کنید.", "warning");
+    return false;
+  }
   if (plan) state.composerModes.set(key, "plan");
   else state.composerModes.delete(key);
   updateComposerModeUi();
   closeComposerToolsMenu();
+  if (state.currentThreadId && provider === "codex") {
+    state.planModeSavingKeys.add(key);
+    updateComposerModeUi();
+    try {
+      await rpc("thread/settings/update", {
+        threadId: state.currentThreadId,
+        collaborationMode,
+      });
+    } catch (error) {
+      if (plan) state.composerModes.delete(key);
+      else state.composerModes.set(key, "plan");
+      showError(error, plan ? "روشن‌کردن Plan mode" : "خاموش‌کردن Plan mode");
+      return false;
+    } finally {
+      state.planModeSavingKeys.delete(key);
+      updateComposerModeUi();
+    }
+  }
   toast(plan ? "Plan mode روشن شد." : "Plan mode خاموش شد.", "success");
   return plan;
 }
@@ -2850,6 +2880,21 @@ function planCollaborationMode() {
       model,
       reasoning_effort:
         template.reasoning_effort || state.settings.effort || "medium",
+    },
+  };
+}
+
+function defaultCollaborationMode() {
+  const template =
+    state.collaborationModes.find((mode) => mode.mode === "default") || {};
+  const model = effectivePlanModel() || template.model || "";
+  if (!model) return null;
+  return {
+    mode: "default",
+    settings: {
+      developer_instructions: null,
+      model,
+      reasoning_effort: template.reasoning_effort || state.settings.effort || null,
     },
   };
 }
@@ -3545,14 +3590,18 @@ function removeItemViewElement(view) {
 
 function createMessageView(item, turnId = null, { continuation = false } = {}) {
   const role = item.type === "userMessage" ? "user" : "assistant";
+  const plan = item.type === "plan";
   const row = document.createElement("article");
   row.className = `message-row ${role}`;
   if (turnId) row.dataset.turnId = turnId;
   if (role === "assistant") {
     row.classList.add("final-answer");
     row.classList.toggle("continuation", continuation);
-    row.dataset.phase = item.phase || "final_answer";
-    row.setAttribute("aria-label", continuation ? "ادامهٔ پاسخ قبلی" : "پاسخ نهایی");
+    row.dataset.phase = plan ? "plan" : item.phase || "final_answer";
+    row.setAttribute(
+      "aria-label",
+      plan ? "برنامه" : continuation ? "ادامهٔ پاسخ قبلی" : "پاسخ نهایی",
+    );
   }
   row.dataset.itemId = item.id;
 
@@ -3852,11 +3901,29 @@ function reconcileOptimisticUserMessage(item, existingView, turnId = null) {
 function renderItem(item, phase = "completed", turnId = null, options = {}) {
   if (!item?.id || !item.type) return null;
   let view = state.itemViews.get(item.id);
+  if (item.type === "plan" && item.text?.trim()) {
+    const duplicate = [...state.itemViews.entries()].find(
+      ([itemId, candidate]) =>
+        itemId !== item.id &&
+        candidate.type === "plan" &&
+        candidate.text.trim() === item.text.trim(),
+    );
+    if (duplicate) {
+      if (view) {
+        removeItemViewElement(view);
+        state.itemViews.delete(item.id);
+      }
+      return duplicate[1];
+    }
+  }
   if (item.type === "userMessage" && item.clientId) {
     view = reconcileOptimisticUserMessage(item, view, turnId);
   }
   const commentary = isCommentaryItem(item);
-  const isMessage = item.type === "userMessage" || (item.type === "agentMessage" && !commentary);
+  const isMessage =
+    item.type === "userMessage" ||
+    item.type === "plan" ||
+    (item.type === "agentMessage" && !commentary);
   const kind = commentary ? "commentary" : isMessage ? "message" : "activity";
   let previousText = "";
   if (view && view.kind !== kind) {
@@ -3882,7 +3949,10 @@ function renderItem(item, phase = "completed", turnId = null, options = {}) {
     view.text = itemText(item) || view.text;
     view.content.innerHTML = markdown(view.text);
     view.content.classList.toggle("streaming-cursor", phase === "started" && item.type === "agentMessage");
-    if (item.type === "agentMessage" && item.phase === "final_answer") {
+    if (
+      item.type === "plan" ||
+      (item.type === "agentMessage" && item.phase === "final_answer")
+    ) {
       completeTurnProcess(turnId);
     }
   } else {
@@ -4457,9 +4527,7 @@ async function sendPrompt(
   text = elements.prompt.value,
   { fromQueue = false } = {},
 ) {
-  if (parseSlashCommand(text)) {
-    return Boolean(await handleSlashCommand(text));
-  }
+  if (parseSlashCommand(text) && (await handleSlashCommand(text))) return true;
   text = String(text || "").trim();
   const input = text ? [{ type: "text", text }] : [];
   if (!input.length || !state.connected || state.navigating || attachmentUploadsForDraft() > 0) {
@@ -4520,6 +4588,10 @@ async function sendPrompt(
         throw new Error("برای Plan mode ابتدا یک مدل Codex انتخاب یا بارگذاری کنید.");
       }
       params.collaborationMode = collaborationMode;
+    } else if (provider === "codex") {
+      // App-server keeps a thread's collaboration mode across turns. Explicitly
+      // select the default preset so switching Plan mode off changes the next turn.
+      params.collaborationMode = defaultCollaborationMode();
     }
     if (planMode && provider === "claude") {
       // Claude Code has no collaboration mode; plan mode is a permission mode.
@@ -4765,6 +4837,17 @@ function handleNotification(message) {
   if (method === "thread/tokenUsage/updated" && threadId) {
     state.threadTokenUsage.set(threadId, params.tokenUsage || null);
     if (threadId === state.currentThreadId) renderContextUsage();
+    return;
+  }
+
+  if (method === "thread/settings/updated" && threadId) {
+    const collaborationMode = params.threadSettings?.collaborationMode;
+    if (collaborationMode?.mode === "plan") {
+      state.composerModes.set(threadId, "plan");
+    } else {
+      state.composerModes.delete(threadId);
+    }
+    if (threadId === state.currentThreadId) updateComposerModeUi();
     return;
   }
 

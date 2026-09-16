@@ -1347,11 +1347,19 @@ test(
         objective = "";
         return jsonResponse({ result: { cleared: true } });
       }
+      if (request.method === "thread/settings/update") {
+        return jsonResponse({ result: {} });
+      }
       if (request.method === "turn/start") {
         turns.push(request.params);
         return jsonResponse({
           result: {
-            turn: { id: "mode-turn", status: "inProgress", items: [], error: null },
+            turn: {
+              id: `mode-turn-${turns.length}`,
+              status: "inProgress",
+              items: [],
+              error: null,
+            },
           },
         });
       }
@@ -1412,6 +1420,63 @@ test(
     assert.equal(threadStart.params.developerInstructions, undefined);
     const methods = requests.map((request) => request.method);
     assert.equal(methods.indexOf("thread/goal/set") < methods.indexOf("turn/start"), true);
+
+    FakeEventSource.latest.emit("rpc", {
+      method: "turn/completed",
+      params: {
+        threadId: thread.id,
+        turn: {
+          id: "mode-turn-1",
+          status: "completed",
+          items: [],
+          error: null,
+        },
+      },
+    });
+    document.querySelector("#composer-tools").click();
+    document.querySelector("#plan-mode-option").click();
+    await waitFor(
+      () =>
+        requests.some(
+          (request) =>
+            request.method === "thread/settings/update" &&
+            request.params.collaborationMode?.mode === "default",
+        ),
+      "Plan mode was not cleared from the thread",
+    );
+    assert.equal(document.querySelector("#plan-mode-option").getAttribute("aria-checked"), "false");
+
+    FakeEventSource.latest.emit("rpc", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: thread.id,
+        threadSettings: {
+          collaborationMode: {
+            mode: "plan",
+            settings: {
+              developer_instructions: null,
+              model: "gpt-test",
+              reasoning_effort: "medium",
+            },
+          },
+        },
+      },
+    });
+    assert.equal(document.querySelector("#plan-mode-option").getAttribute("aria-checked"), "true");
+    FakeEventSource.latest.emit("rpc", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: thread.id,
+        threadSettings: { collaborationMode: null },
+      },
+    });
+    assert.equal(document.querySelector("#plan-mode-option").getAttribute("aria-checked"), "false");
+
+    typePrompt(window, "حالا اجرا کن");
+    document.querySelector("#send-message").click();
+    await waitFor(() => turns.length === 2, "Default turn was not started");
+    assert.equal(turns[1].collaborationMode.mode, "default");
+    assert.match(turns[1].developerInstructions, /clear, polished visual hierarchy/);
 
     document.querySelector("#goal-toggle").click();
     await waitFor(
