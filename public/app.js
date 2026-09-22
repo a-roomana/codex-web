@@ -2142,16 +2142,36 @@ function modelEntry(provider = state.settings.provider) {
 
 // Codex reports which efforts a model actually accepts; Claude's list carries no
 // metadata, so fall back to everything the provider will validate.
+// Codex reports each level as { reasoningEffort, description }; tolerate a bare
+// string too so the shape is not load-bearing.
+function normalizeEffort(entry) {
+  if (typeof entry === "string") return { value: entry, description: "" };
+  if (entry && typeof entry === "object") {
+    return {
+      value: String(entry.reasoningEffort || entry.effort || entry.id || ""),
+      description: String(entry.description || ""),
+    };
+  }
+  return { value: "", description: "" };
+}
+
 function effortsForCurrentModel(provider = state.settings.provider) {
-  const supported = modelEntry(provider)?.supportedReasoningEfforts;
-  const values = Array.isArray(supported) && supported.length
-    ? supported
-    : Object.keys(EFFORT_LABELS).filter((value) => value);
-  const allowed = values.filter(
-    (value) =>
+  const model = modelEntry(provider);
+  const supported = model?.supportedReasoningEfforts;
+  const entries =
+    Array.isArray(supported) && supported.length
+      ? supported.map(normalizeEffort)
+      : Object.keys(EFFORT_LABELS)
+          .filter((value) => value)
+          .map((value) => ({ value, description: "" }));
+  const allowed = entries.filter(
+    ({ value }) =>
       EFFORT_LABELS[value] && (provider === "codex" || CLAUDE_EFFORTS.has(value)),
   );
-  return ["", ...allowed];
+  const fallbackLabel = model?.defaultReasoningEffort
+    ? `پیش‌فرض مدل (${EFFORT_LABELS[model.defaultReasoningEffort] || model.defaultReasoningEffort})`
+    : EFFORT_LABELS[""];
+  return [{ value: "", description: "", label: fallbackLabel }, ...allowed];
 }
 
 function updateModelLabel(provider = state.settings.provider) {
@@ -2232,14 +2252,15 @@ function renderRunChipMenu() {
   }
 
   elements.effortOptions.replaceChildren();
-  for (const value of effortsForCurrentModel(provider)) {
+  for (const entry of effortsForCurrentModel(provider)) {
     const button = document.createElement("button");
     button.type = "button";
-    const selected = value === (state.settings.effort || "");
+    const selected = entry.value === (state.settings.effort || "");
     button.className = `effort-option ${selected ? "active" : ""}`;
-    button.dataset.effortValue = value;
+    button.dataset.effortValue = entry.value;
     button.setAttribute("aria-pressed", String(selected));
-    button.textContent = EFFORT_LABELS[value];
+    button.textContent = entry.label || EFFORT_LABELS[entry.value];
+    if (entry.description) button.title = entry.description;
     elements.effortOptions.append(button);
   }
 }

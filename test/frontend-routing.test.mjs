@@ -2346,8 +2346,13 @@ test(
                 model: "gpt-5-codex",
                 displayName: "GPT-5 Codex",
                 isDefault: true,
-                // Codex reports the efforts a model really accepts.
-                supportedReasoningEfforts: ["low", "medium", "high"],
+                // Codex reports each level as an object, not a bare string.
+                supportedReasoningEfforts: [
+                  { reasoningEffort: "low", description: "Fast responses" },
+                  { reasoningEffort: "medium", description: "Balanced" },
+                  { reasoningEffort: "high", description: "Deeper reasoning" },
+                ],
+                defaultReasoningEffort: "low",
               },
               { id: "gpt-5", model: "gpt-5", displayName: "GPT-5" },
             ],
@@ -2409,6 +2414,16 @@ test(
       `expected only the declared efforts, got ${efforts().join()}`,
     );
     assert.deepEqual(efforts(), ["", "low", "medium", "high"]);
+    // The description from the API is worth surfacing.
+    assert.equal(
+      document.querySelector("#effort-options [data-effort-value='medium']").title,
+      "Balanced",
+    );
+    // The default level the model reports is named on the fallback option.
+    assert.match(
+      document.querySelector("#effort-options [data-effort-value='']").textContent,
+      /Low/,
+    );
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );
