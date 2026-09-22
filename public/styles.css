@@ -826,10 +826,6 @@ body.sidebar-collapsed .menu-button {
   background: var(--bg);
 }
 
-.main-panel::before {
-  display: none;
-}
-
 .topbar {
   z-index: 5;
   display: flex;
@@ -883,18 +879,6 @@ body.sidebar-collapsed .menu-button {
   font-size: 0.9375rem;
   font-weight: 690;
   line-height: 1.45;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.thread-meta {
-  min-height: 16px;
-  overflow: hidden;
-  color: var(--muted-2);
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  line-height: 1.25;
-  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1017,36 +1001,6 @@ body.sidebar-collapsed .menu-button {
   font-size: 0.9rem;
 }
 
-.suggestions {
-  display: grid;
-  width: 100%;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 9px;
-}
-
-.suggestions button {
-  min-height: 62px;
-  padding: 12px 14px;
-  color: var(--text-soft);
-  background: var(--panel-3);
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  box-shadow: 0 8px 22px rgb(0 0 0 / 0.14);
-  font-size: 0.875rem;
-  line-height: 1.6;
-  text-align: right;
-}
-
-.suggestions button:hover {
-  color: var(--text);
-  background: var(--panel-2);
-  border-color: var(--accent-border);
-  box-shadow:
-    0 0 22px rgb(var(--accent-rgb) / 0.08),
-    var(--shadow-soft);
-  transform: translateY(-2px);
-}
-
 .messages {
   min-width: 0;
   width: min(48rem, calc(100% - 40px));
@@ -1082,21 +1036,6 @@ body.sidebar-collapsed .menu-button {
   color: var(--muted-2);
   font-size: 0.75rem;
   font-weight: 600;
-}
-
-.message-avatar {
-  display: none;
-  width: 29px;
-  height: 29px;
-  margin-top: 2px;
-  flex: 0 0 auto;
-  place-items: center;
-  color: var(--accent-ink);
-  background: linear-gradient(145deg, var(--accent-strong), var(--accent));
-  border-radius: 9px;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  font-weight: 900;
 }
 
 .message-body {
@@ -2658,38 +2597,48 @@ button.context-chip:hover {
   white-space: nowrap;
 }
 
-.welcome-project {
-  display: inline-flex;
-  margin-top: 4px;
-  padding: 7px 12px;
-  align-items: center;
-  gap: 7px;
+.run-chip-switcher {
+  position: relative;
+  min-width: 0;
+}
+
+.run-chip-heading {
+  margin: 2px 0 0;
+  padding: 4px 8px 2px;
+  color: var(--muted-2);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.run-chip-heading + .project-switcher-options {
+  max-height: 200px;
+}
+
+.effort-options {
+  display: flex;
+  padding: 2px 4px 4px;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.effort-option {
+  padding: 4px 9px;
   color: var(--muted);
   background: var(--panel-2);
   border: 1px solid var(--line-soft);
-  border-radius: 9px;
-  font-size: 0.8125rem;
+  border-radius: 7px;
+  font-size: 0.72rem;
 }
 
-.welcome-project:hover {
+.effort-option:hover {
   color: var(--text);
   background: var(--surface-raised);
-  border-color: var(--line);
 }
 
-.welcome-project.assigned {
-  color: var(--accent-strong);
-  border-color: var(--accent-border);
-}
-
-.welcome-project svg {
-  width: 15px;
-  height: 15px;
-  fill: none;
-  stroke: currentcolor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.65;
+.effort-option.active {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .context-chip.readonly {
@@ -3084,12 +3033,6 @@ dialog form,
 
 .field > span,
 .field > legend,
-.question-label {
-  color: var(--text-soft);
-  font-size: 0.875rem;
-  font-weight: 650;
-}
-
 .field small {
   color: var(--muted-2);
   font-size: 0.75rem;
@@ -3834,14 +3777,6 @@ dialog form,
     width: min(100% - 28px, 660px);
     padding-top: 45px;
   }
-
-  .suggestions {
-    grid-template-columns: 1fr;
-  }
-
-  .suggestions button {
-    min-height: 48px;
-  }
 }
 
 @media (max-width: 560px) {
@@ -3891,11 +3826,6 @@ dialog form,
 
   .user .message-body {
     max-width: 90%;
-  }
-
-  .message-avatar {
-    width: 26px;
-    height: 26px;
   }
 
   .message-row {

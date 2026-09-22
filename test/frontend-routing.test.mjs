@@ -999,14 +999,11 @@ test(
         "plan",
         "compact",
         "new",
-        "clear",
         "resume",
         "status",
         "usage",
         "model",
         "permissions",
-        "settings",
-        "help",
       ],
     );
 
@@ -2323,6 +2320,95 @@ test(
       "web",
       "assigning a chat must not change what the sidebar is browsing",
     );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
+
+test(
+  "the composer chip switches model and reasoning effort",
+  { concurrency: false },
+  async (t) => {
+    const rpcRequests = [];
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({ projects: [], threadProjects: {} });
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      rpcRequests.push(request);
+      if (request.method === "model/list") {
+        return jsonResponse({
+          result: {
+            data: [
+              {
+                id: "gpt-5-codex",
+                model: "gpt-5-codex",
+                displayName: "GPT-5 Codex",
+                isDefault: true,
+                // Codex reports the efforts a model really accepts.
+                supportedReasoningEfforts: ["low", "medium", "high"],
+              },
+              { id: "gpt-5", model: "gpt-5", displayName: "GPT-5" },
+            ],
+          },
+        });
+      }
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: [], nextCursor: null } });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+    const label = () => document.querySelector("#model-label").textContent;
+    const efforts = () =>
+      [...document.querySelectorAll("#effort-options [data-effort-value]")].map(
+        (option) => option.dataset.effortValue,
+      );
+
+    document.querySelector("#model-chip").click();
+    await waitFor(
+      () => document.querySelector("#model-options [data-model-value='gpt-5']"),
+      "the model menu was not populated",
+    );
+    assert.equal(
+      document.querySelector("#run-chip-menu").classList.contains("hidden"),
+      false,
+    );
+
+    document.querySelector("#model-options [data-model-value='gpt-5']").click();
+    await waitFor(() => label() === "GPT-5", "the chip did not follow the model change");
+    assert.equal(
+      JSON.parse(window.localStorage.getItem("codex-web-settings")).modelByProvider.codex,
+      "gpt-5",
+      "the model choice was not persisted",
+    );
+
+    document.querySelector("#model-chip").click();
+    document.querySelector("#effort-options [data-effort-value='high']").click();
+    await waitFor(
+      () => label() === "GPT-5 · High",
+      "the chip did not show the chosen effort",
+    );
+    assert.equal(
+      JSON.parse(window.localStorage.getItem("codex-web-settings")).effort,
+      "high",
+    );
+
+    // A model that declares its supported efforts must not offer the others.
+    document.querySelector("#model-chip").click();
+    document.querySelector("#model-options [data-model-value='gpt-5-codex']").click();
+    document.querySelector("#model-chip").click();
+    await waitFor(
+      () => efforts().length === 4,
+      `expected only the declared efforts, got ${efforts().join()}`,
+    );
+    assert.deepEqual(efforts(), ["", "low", "medium", "high"]);
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );

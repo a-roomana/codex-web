@@ -49,11 +49,6 @@ const SLASH_COMMANDS = [
     description: "شروع یک گفتگوی مستقل جدید",
   },
   {
-    name: "clear",
-    label: "پاک‌کردن و شروع دوباره",
-    description: "نام دیگر /new برای آغاز یک گفتگوی تازه",
-  },
-  {
     name: "resume",
     label: "ادامهٔ یک گفتگو",
     description: "رفتن به فهرست گفتگوهای ذخیره‌شده",
@@ -72,22 +67,12 @@ const SLASH_COMMANDS = [
   {
     name: "model",
     label: "انتخاب مدل",
-    description: "بازکردن تنظیمات مدل گفتگوهای تازه",
+    description: "بازکردن تنظیمات مدل و سطح استدلال",
   },
   {
     name: "permissions",
     label: "تنظیم دسترسی‌ها",
     description: "بازکردن تنظیمات sandbox و approval",
-  },
-  {
-    name: "settings",
-    label: "تنظیمات",
-    description: "بازکردن همهٔ تنظیمات Codex Web",
-  },
-  {
-    name: "help",
-    label: "راهنمای فرمان‌ها",
-    description: "نمایش فهرست فرمان‌هایی که این رابط پشتیبانی می‌کند",
   },
 ].map((command) => ({ ...command, kind: "builtin", token: `/${command.name}` }));
 
@@ -240,12 +225,15 @@ const elements = {
   menuButton: $("#menu-button"),
   messages: $("#messages"),
   mobileScrim: $("#mobile-scrim"),
+  modelChip: $("#model-chip"),
   modelLabel: $("#model-label"),
+  modelOptions: $("#model-options"),
+  effortOptions: $("#effort-options"),
+  runChipMenu: $("#run-chip-menu"),
   modelSelect: $("#model-select"),
   newChat: $("#new-chat"),
   nextUserMessage: $("#next-user-message"),
   openSettings: $("#open-settings"),
-  personalitySelect: $("#personality-select"),
   planModeOption: $("#plan-mode-option"),
   providerSelect: $("#provider-select"),
   claudePermissionMode: $("#claude-permission-mode"),
@@ -307,7 +295,6 @@ const elements = {
   statusDot: $("#status-dot"),
   stopTurn: $("#stop-turn"),
   threadList: $("#thread-list"),
-  threadMeta: $("#thread-meta"),
   threadSearch: $("#thread-search"),
   threadTitle: $("#thread-title"),
   toasts: $("#toasts"),
@@ -326,8 +313,6 @@ const elements = {
   usageRefresh: $("#usage-refresh"),
   userMessageNavigationStatus: $("#user-message-navigation-status"),
   welcome: $("#welcome"),
-  welcomeProject: $("#welcome-project"),
-  welcomeProjectLabel: $("#welcome-project-label"),
   welcomeDescription: $("#welcome-description"),
   welcomeTitle: $("#welcome-title"),
 };
@@ -339,13 +324,12 @@ const defaultSettings = {
   effort: "",
   modelByProvider: { codex: "", claude: "" },
   palette: "cyan",
-  personality: "",
   provider: "codex",
   sandbox: "",
   sidebarCollapsed: false,
 };
 
-const SETTINGS_VERSION = 5;
+const SETTINGS_VERSION = 6;
 const ACCENT_PALETTES = new Set(["cyan", "red", "purple", "green"]);
 const ACTIVE_PROJECT_KEY = "codex-web-active-project";
 const THREAD_LIST_PAGE_SIZE = 100;
@@ -468,7 +452,12 @@ const state = {
 function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem("codex-web-settings") || "{}");
-    const { model: legacyModel, modelByProvider: storedModels, ...savedSettings } = saved;
+    const {
+      model: legacyModel,
+      modelByProvider: storedModels,
+      personality: _removedPersonality,
+      ...savedSettings
+    } = saved;
     const modelByProvider = {
       ...defaultSettings.modelByProvider,
       ...(storedModels || {}),
@@ -1440,31 +1429,6 @@ function showSlashStatus() {
   card.append(list);
 }
 
-function showSlashHelp() {
-  const card = renderLocalCommandCard(
-    `فرمان‌های پشتیبانی‌شده برای ${providerLabel(effectiveProvider())}`,
-  );
-  const list = document.createElement("ul");
-  list.className = "local-command-help";
-  for (const command of slashCommandsForProvider()) {
-    const item = document.createElement("li");
-    const token = document.createElement("code");
-    token.textContent = command.token;
-    const description = document.createElement("span");
-    description.textContent = command.description;
-    item.append(token, description);
-    const badge = slashCommandBadge(command);
-    if (badge) {
-      const kind = document.createElement("span");
-      kind.className = "slash-command-kind";
-      kind.textContent = badge;
-      item.append(kind);
-    }
-    list.append(item);
-  }
-  card.append(list);
-}
-
 async function runCompactSlashCommand(command) {
   const threadId = state.currentThreadId;
   const targetDraftKey = draftKey(threadId);
@@ -1549,7 +1513,6 @@ async function executeSlashCommand(command) {
       await runCompactSlashCommand(command);
       return;
     case "new":
-    case "clear":
       clearSlashCommandText(command.token, targetDraftKey);
       newChat();
       return;
@@ -1582,14 +1545,6 @@ async function executeSlashCommand(command) {
             : elements.sandboxSelect,
         provider: effectiveProvider(),
       });
-      return;
-    case "settings":
-      clearSlashCommandText(command.token, targetDraftKey);
-      openSettings();
-      return;
-    case "help":
-      clearSlashCommandText(command.token, targetDraftKey);
-      showSlashHelp();
       return;
   }
 }
@@ -2163,14 +2118,116 @@ function updateSettingsProviderUi(provider) {
   updateFullAccessWarning(provider);
 }
 
+const EFFORT_LABELS = {
+  "": "پیش‌فرض مدل",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+  ultra: "Ultra",
+};
+
+function modelEntry(provider = state.settings.provider) {
+  const models = state.modelsByProvider[provider] || [];
+  const selected = state.settings.modelByProvider[provider] || "";
+  return (
+    models.find(
+      (candidate) => candidate.id === selected || candidate.model === selected,
+    ) || null
+  );
+}
+
+// Codex reports which efforts a model actually accepts; Claude's list carries no
+// metadata, so fall back to everything the provider will validate.
+function effortsForCurrentModel(provider = state.settings.provider) {
+  const supported = modelEntry(provider)?.supportedReasoningEfforts;
+  const values = Array.isArray(supported) && supported.length
+    ? supported
+    : Object.keys(EFFORT_LABELS).filter((value) => value);
+  const allowed = values.filter(
+    (value) =>
+      EFFORT_LABELS[value] && (provider === "codex" || CLAUDE_EFFORTS.has(value)),
+  );
+  return ["", ...allowed];
+}
+
 function updateModelLabel(provider = state.settings.provider) {
+  const selected = state.settings.modelByProvider[provider] || "";
+  const name = modelEntry(provider)?.displayName || selected || "مدل پیش‌فرض";
+  const effort = state.settings.effort;
+  elements.modelLabel.textContent =
+    effort && EFFORT_LABELS[effort] ? `${name} · ${EFFORT_LABELS[effort]}` : name;
+
+  // The topbar readout used to carry the open thread's real provider/cwd/model;
+  // keep that detail here rather than losing it with the readout.
+  const thread = state.currentThreadId ? state.currentThread : null;
+  const runtime = state.currentThreadId
+    ? state.threadRuntime.get(state.currentThreadId) || {}
+    : {};
+  elements.modelChip.title = thread
+    ? [
+        providerLabel(thread.provider || providerForThread(thread.id)),
+        runtime.model || thread.model || name,
+      ]
+        .filter(Boolean)
+        .join("  ·  ")
+    : `${name} — برای گفتگوی تازه`;
+  // Models arrive asynchronously, so an open menu has to pick them up.
+  renderRunChipMenu();
+}
+
+function renderRunChipMenu() {
+  const provider = state.settings.provider;
   const models = state.modelsByProvider[provider] || [];
   const selectedModel = state.settings.modelByProvider[provider] || "";
-  const model = models.find(
-    (candidate) =>
-      candidate.id === selectedModel || candidate.model === selectedModel,
-  );
-  elements.modelLabel.textContent = model?.displayName || selectedModel || "مدل پیش‌فرض";
+
+  elements.modelOptions.replaceChildren();
+  for (const model of [{ model: "", displayName: `پیش‌فرض ${providerLabel(provider)}` }, ...models]) {
+    const value = model.model || model.id || "";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "option");
+    const selected = value === selectedModel;
+    button.setAttribute("aria-selected", String(selected));
+    button.className = `project-item ${selected ? "active" : ""}`;
+    button.dataset.modelValue = value;
+
+    const check = document.createElement("span");
+    check.className = "project-item-check";
+    check.textContent = selected ? "✓" : "";
+    check.setAttribute("aria-hidden", "true");
+
+    const name = document.createElement("span");
+    name.className = "project-item-name";
+    name.textContent = `${model.displayName}${model.isDefault ? " — پیش‌فرض" : ""}`;
+    button.append(check, name);
+    elements.modelOptions.append(button);
+  }
+
+  elements.effortOptions.replaceChildren();
+  for (const value of effortsForCurrentModel(provider)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    const selected = value === (state.settings.effort || "");
+    button.className = `effort-option ${selected ? "active" : ""}`;
+    button.dataset.effortValue = value;
+    button.setAttribute("aria-pressed", String(selected));
+    button.textContent = EFFORT_LABELS[value];
+    elements.effortOptions.append(button);
+  }
+}
+
+function setRunSetting({ model, effort }) {
+  if (model !== undefined) {
+    state.settings.modelByProvider = {
+      ...state.settings.modelByProvider,
+      [state.settings.provider]: model,
+    };
+  }
+  if (effort !== undefined) state.settings.effort = effort;
+  persistSettings();
+  updateSettingsUi();
 }
 
 function updateSettingsUi() {
@@ -2185,7 +2242,6 @@ function updateSettingsUi() {
   elements.effortSelect.value = state.settings.effort;
   elements.sandboxSelect.value = state.settings.sandbox;
   elements.approvalSelect.value = state.settings.approvalPolicy;
-  elements.personalitySelect.value = state.settings.personality;
   elements.claudePermissionMode.value = state.settings.claudePermissionMode;
   for (const input of document.querySelectorAll('input[name="accent-palette"]')) {
     input.checked = input.value === state.settings.palette;
@@ -2237,7 +2293,6 @@ function saveSettings() {
         (input) => input.checked,
       )?.value ||
       defaultSettings.palette,
-    personality: elements.personalitySelect.value,
     provider,
     sandbox: elements.sandboxSelect.value,
     sidebarCollapsed: state.settings.sidebarCollapsed,
@@ -2400,8 +2455,6 @@ function updateProjectChip() {
     ? `${project.name} — ${project.cwd}`
     : cwd;
 
-  elements.welcomeProjectLabel.textContent = project ? project.name : "انتخاب پروژه";
-  elements.welcomeProject.classList.toggle("assigned", Boolean(project));
   updateShareAvailability();
 }
 
@@ -2545,31 +2598,44 @@ function renderProjects() {
   updateProjectChip();
 }
 
+const runChipMenu = {
+  mode: "run",
+  trigger: elements.modelChip,
+  menu: elements.runChipMenu,
+};
+
+function allChipMenus() {
+  return [...projectMenus, runChipMenu];
+}
+
 function menuIsOpen(descriptor) {
   return !descriptor.menu.classList.contains("hidden");
 }
 
 function openProjectMenu(descriptor) {
-  for (const other of projectMenus) {
+  for (const other of allChipMenus()) {
     if (other !== descriptor) closeProjectMenu(other);
   }
   descriptor.menu.classList.remove("hidden");
   descriptor.trigger.setAttribute("aria-expanded", "true");
-  renderProjects();
-  setTimeout(() => descriptor.filter.focus(), 0);
+  if (descriptor.mode === "run") renderRunChipMenu();
+  else renderProjects();
+  if (descriptor.filter) setTimeout(() => descriptor.filter.focus(), 0);
 }
 
 function closeProjectMenu(descriptor, { focusTrigger = false } = {}) {
   if (!menuIsOpen(descriptor)) return;
   descriptor.menu.classList.add("hidden");
   descriptor.trigger.setAttribute("aria-expanded", "false");
-  descriptor.filter.value = "";
-  renderProjects();
+  if (descriptor.filter) {
+    descriptor.filter.value = "";
+    renderProjects();
+  }
   if (focusTrigger) descriptor.trigger.focus();
 }
 
 function closeProjectMenus() {
-  for (const descriptor of projectMenus) closeProjectMenu(descriptor);
+  for (const descriptor of allChipMenus()) closeProjectMenu(descriptor);
 }
 
 function toggleProjectMenu(descriptor) {
@@ -3862,15 +3928,8 @@ function newChat({
   setBusy(false);
   clearConversation();
   elements.welcome.classList.remove("hidden");
-  const project = currentProject();
-  elements.welcomeTitle.textContent = project
-    ? `در پروژهٔ «${project.name}» روی چی کار کنیم؟`
-    : "امروز روی چی کار کنیم؟";
-  elements.welcomeDescription.textContent = project
-    ? "پوشه و دستورهای این پروژه برای گفتگوی تازه اعمال می‌شوند."
-    : "کد، فایل یا ایده‌ات را بفرست؛ ابزارهای فنی پشت صحنه آماده‌اند.";
+  updateAgentCopy(effectiveProvider());
   elements.threadTitle.textContent = "گفتگوی تازه";
-  elements.threadMeta.textContent = "";
   updateThreadUrl(null, historyMode, state.newDraftId);
   restoreDraft(null);
   renderThreadList();
@@ -3902,15 +3961,6 @@ function setCurrentThread(thread, metadata = {}) {
   syncThreadActivity(thread);
   markThreadSeen(thread.id);
   elements.threadTitle.textContent = threadDisplayTitle(thread);
-  const cwd = metadata.cwd || thread.cwd || state.settings.cwd;
-  const model = metadata.model || thread.model || "";
-  elements.threadMeta.textContent = [
-    providerLabel(thread.provider || providerForThread(thread.id)),
-    cwd,
-    model,
-  ]
-    .filter(Boolean)
-    .join("  ·  ");
   elements.welcome.classList.add("hidden");
   restoreDraft(thread.id);
   renderThreadList();
@@ -4913,7 +4963,6 @@ async function ensureThread(sourceThreadId, navigationVersion, sourceDraftKey) {
     if (instructions) params.developerInstructions = instructions;
     if (state.settings.approvalPolicy) params.approvalPolicy = state.settings.approvalPolicy;
     if (state.settings.sandbox) params.sandbox = state.settings.sandbox;
-    if (state.settings.personality) params.personality = state.settings.personality;
   }
   const model = state.settings.modelByProvider[state.settings.provider] || "";
   if (model) params.model = model;
@@ -6333,9 +6382,6 @@ elements.projectChipAdd.addEventListener("click", () => {
   closeProjectMenus();
   openProjectDialog();
 });
-elements.welcomeProject.addEventListener("click", () =>
-  toggleProjectMenu(projectMenus[1]),
-);
 for (const descriptor of projectMenus) {
   descriptor.trigger.addEventListener("click", () => toggleProjectMenu(descriptor));
   descriptor.filter.addEventListener("input", renderProjects);
@@ -6359,6 +6405,17 @@ for (const descriptor of projectMenus) {
     else selectProject(projectId);
   });
 }
+elements.modelChip.addEventListener("click", () => toggleProjectMenu(runChipMenu));
+elements.modelOptions.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-model-value]");
+  if (!option) return;
+  setRunSetting({ model: option.dataset.modelValue });
+});
+elements.effortOptions.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-effort-value]");
+  if (!option) return;
+  setRunSetting({ effort: option.dataset.effortValue });
+});
 document.addEventListener("click", (event) => {
   if (event.target.closest(".project-switcher")) return;
   closeProjectMenus();
@@ -6545,14 +6602,6 @@ elements.messages.addEventListener("click", async (event) => {
   } catch {
     toast("کپی‌کردن ممکن نبود.", "error");
   }
-});
-document.querySelectorAll("[data-prompt]").forEach((button) => {
-  button.addEventListener("click", () => {
-    elements.prompt.value = button.dataset.prompt;
-    saveCurrentDraft();
-    resizePrompt();
-    elements.prompt.focus();
-  });
 });
 
 async function initialize() {

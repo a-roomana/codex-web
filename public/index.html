@@ -126,7 +126,6 @@
           </button>
           <div class="thread-heading">
             <h1 id="thread-title">گفتگوی تازه</h1>
-            <div class="thread-meta" id="thread-meta" dir="ltr"></div>
           </div>
           <div
             class="message-navigation"
@@ -197,24 +196,6 @@
             <p id="welcome-description">
               کد، فایل یا ایده‌ات را بفرست؛ ابزارهای فنی پشت صحنه آماده‌اند.
             </p>
-            <button class="welcome-project" id="welcome-project" type="button">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />
-              </svg>
-              <bdi id="welcome-project-label">انتخاب پروژه</bdi>
-              <span aria-hidden="true">▾</span>
-            </button>
-            <div class="suggestions">
-              <button data-prompt="ساختار این پروژه را بررسی کن و خلاصه‌ای از بخش‌های اصلی بده.">
-                بررسی ساختار پروژه
-              </button>
-              <button data-prompt="تغییرات git فعلی را review کن و مشکلات مهم را بگو.">
-                Review تغییرات فعلی
-              </button>
-              <button data-prompt="تست‌های پروژه را اجرا کن و اگر خطایی هست علتش را پیدا کن.">
-                بررسی تست‌ها
-              </button>
-            </div>
           </div>
           <div class="messages" id="messages"></div>
         </section>
@@ -419,7 +400,31 @@
                     </button>
                   </div>
                 </div>
-                <span class="context-chip readonly" id="model-label">مدل پیش‌فرض</span>
+                <div class="project-switcher run-chip-switcher">
+                  <button
+                    class="context-chip run-chip"
+                    id="model-chip"
+                    type="button"
+                    aria-haspopup="listbox"
+                    aria-expanded="false"
+                    aria-controls="run-chip-menu"
+                    aria-label="مدل و reasoning effort"
+                  >
+                    <bdi id="model-label">مدل پیش‌فرض</bdi>
+                    <span class="project-switcher-caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div
+                    class="project-switcher-menu upward hidden"
+                    id="run-chip-menu"
+                    role="listbox"
+                    aria-label="انتخاب مدل و reasoning effort"
+                  >
+                    <p class="run-chip-heading">مدل</p>
+                    <div class="project-switcher-options" id="model-options"></div>
+                    <p class="run-chip-heading">Reasoning effort</p>
+                    <div class="effort-options" id="effort-options"></div>
+                  </div>
+                </div>
               </div>
               <div class="composer-actions">
                 <span class="upload-status hidden" id="upload-status" aria-live="polite">
@@ -556,17 +561,7 @@
           </label>
         </div>
 
-        <label class="field codex-only-setting">
-          <span>لحن پاسخ</span>
-          <select id="personality-select">
-            <option value="">پیش‌فرض</option>
-            <option value="friendly">Friendly</option>
-            <option value="pragmatic">Pragmatic</option>
-            <option value="none">None</option>
-          </select>
-        </label>
-
-        <label class="field claude-only-setting" id="claude-permission-field">
+        <label class="field claude-only-setting">
           <span>مجوزهای Claude</span>
           <select id="claude-permission-mode">
             <option value="acceptEdits">ویرایش فایل‌ها مجاز؛ ابزارهای تأییدنشده رد می‌شوند</option>
