@@ -349,6 +349,26 @@ const SETTINGS_VERSION = 5;
 const ACCENT_PALETTES = new Set(["cyan", "red", "purple", "green"]);
 const ACTIVE_PROJECT_KEY = "codex-web-active-project";
 const THREAD_LIST_PAGE_SIZE = 100;
+const LAST_OPENED_KEY = "codex-web-last-opened";
+// Enough to outlive a working session without letting the map grow forever.
+const LAST_OPENED_LIMIT = 50;
+// How many recently opened conversations can be pulled up from other projects.
+const PINNED_RECENT_COUNT = 3;
+const PINNED_LIMIT = 4;
+
+function loadLastOpened() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAST_OPENED_KEY) || "{}");
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+    return Object.fromEntries(
+      Object.entries(saved).filter(
+        ([threadId, at]) => typeof threadId === "string" && Number.isFinite(at),
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
 
 function loadActiveProjectId() {
   try {
@@ -420,6 +440,7 @@ const state = {
   threadActivity: new Map(),
   threadEventBacklog: new Map(),
   threadRuntime: new Map(),
+  lastOpenedAt: loadLastOpened(),
   threadListHasMore: false,
   threadListLimit: THREAD_LIST_PAGE_SIZE,
   threadProjects: new Map(),
@@ -2293,6 +2314,33 @@ function resolveThreadProject(thread) {
   return bestId;
 }
 
+// Conversation timestamps are seconds, so keep this in the same unit.
+function nowInSeconds() {
+  return Math.floor(Date.now() / 1000);
+}
+
+function rememberThreadOpened(threadId) {
+  if (!threadId) return;
+  state.lastOpenedAt[threadId] = nowInSeconds();
+  const entries = Object.entries(state.lastOpenedAt).sort(
+    (left, right) => right[1] - left[1],
+  );
+  if (entries.length > LAST_OPENED_LIMIT) {
+    state.lastOpenedAt = Object.fromEntries(entries.slice(0, LAST_OPENED_LIMIT));
+  }
+  try {
+    localStorage.setItem(LAST_OPENED_KEY, JSON.stringify(state.lastOpenedAt));
+  } catch {
+    // Recency still works for this tab when storage is unavailable.
+  }
+}
+
+// Reading a conversation never bumps its updatedAt, so recency has to combine
+// what the agent did with what the user last looked at.
+function lastActiveAt(thread) {
+  return Math.max(thread.updatedAt || 0, state.lastOpenedAt[thread.id] || 0);
+}
+
 function threadsForProject(projectId) {
   if (!projectId) return state.threads;
   return state.threads.filter((thread) => resolveThreadProject(thread) === projectId);
@@ -2988,21 +3036,69 @@ function buildThreadItem(thread, { showProject = false } = {}) {
   return button;
 }
 
+function threadIsBusy(threadId) {
+  const phase = state.threadActivity.get(threadId)?.phase;
+  return phase === "running" || phase === "needs-input";
+}
+
+// A small board above the list for conversations the list itself cannot show:
+// anything working or waiting, plus the last few opened in another project so
+// that stepping away from a chat and back does not mean hunting for it.
+function pinnedThreads() {
+  const recentElsewhere = new Set(
+    [...state.threads]
+      .filter(
+        (thread) =>
+          state.activeProjectId &&
+          resolveThreadProject(thread) !== state.activeProjectId,
+      )
+      .sort((left, right) => lastActiveAt(right) - lastActiveAt(left))
+      .slice(0, PINNED_RECENT_COUNT)
+      .map((thread) => thread.id),
+  );
+  return state.threads
+    .filter((thread) => threadIsBusy(thread.id) || recentElsewhere.has(thread.id))
+    .sort((left, right) => {
+      const byBusy = Number(threadIsBusy(right.id)) - Number(threadIsBusy(left.id));
+      return byBusy || lastActiveAt(right) - lastActiveAt(left);
+    })
+    .slice(0, PINNED_LIMIT);
+}
+
 function renderThreadList() {
   elements.threadList.replaceChildren();
   const searching = Boolean(elements.threadSearch.value.trim());
   // Search always spans every project; browsing is scoped to the selected one.
-  const threads = searching ? state.threads : threadsForProject(state.activeProjectId);
+  const scoped = searching ? state.threads : threadsForProject(state.activeProjectId);
+  const pinned = searching ? [] : pinnedThreads();
+  const pinnedIds = new Set(pinned.map((thread) => thread.id));
+  // A pinned conversation moves to the board instead of appearing twice.
+  const threads = scoped.filter((thread) => !pinnedIds.has(thread.id));
+
+  if (pinned.length) {
+    const section = document.createElement("div");
+    section.className = "thread-pinned";
+    const heading = document.createElement("div");
+    heading.className = "thread-pinned-heading";
+    heading.textContent = "فعال و اخیر";
+    section.append(heading);
+    for (const thread of pinned) {
+      section.append(buildThreadItem(thread, { showProject: true }));
+    }
+    elements.threadList.append(section);
+  }
 
   if (!threads.length) {
-    const empty = document.createElement("div");
-    empty.className = "thread-empty";
-    empty.textContent = searching
-      ? "گفتگویی با این جستجو پیدا نشد."
-      : state.activeProjectId
-        ? "هنوز گفتگویی در این پروژه نیست."
-        : "هنوز گفتگویی پیدا نشد.";
-    elements.threadList.append(empty);
+    if (!pinned.length) {
+      const empty = document.createElement("div");
+      empty.className = "thread-empty";
+      empty.textContent = searching
+        ? "گفتگویی با این جستجو پیدا نشد."
+        : state.activeProjectId
+          ? "هنوز گفتگویی در این پروژه نیست."
+          : "هنوز گفتگویی پیدا نشد.";
+      elements.threadList.append(empty);
+    }
     return;
   }
 
@@ -4432,6 +4528,7 @@ async function openThread(threadId, { historyMode = "push" } = {}) {
     return false;
   }
   const navigationVersion = ++state.navigationVersion;
+  rememberThreadOpened(threadId);
   if (threadId === state.currentThreadId) {
     state.openingThreadId = null;
     updateThreadUrl(threadId, historyMode);

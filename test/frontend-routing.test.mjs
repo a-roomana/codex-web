@@ -1927,12 +1927,22 @@ test(
 
     const { window } = await createHarness(t, { fetchHandler });
     const document = window.document;
-    const listedIds = () =>
+    const allIds = () =>
       [...document.querySelectorAll("#thread-list [data-thread-id]")].map(
         (item) => item.dataset.threadId,
       );
+    const listedIds = () =>
+      [...document.querySelectorAll("#thread-list [data-thread-id]")]
+        .filter((item) => !item.closest(".thread-pinned"))
+        .map((item) => item.dataset.threadId);
+    const pinnedIds = () =>
+      [...document.querySelectorAll(".thread-pinned [data-thread-id]")].map(
+        (item) => item.dataset.threadId,
+      );
 
-    await waitFor(() => listedIds().length === 3, "threads were not listed");
+    await waitFor(() => allIds().length === 3, "threads were not listed");
+    // With no project selected every conversation is already listed below.
+    assert.deepEqual(pinnedIds(), []);
 
     // The switcher counts conversations per project using cwd matching.
     const apiOption = document.querySelector("[data-project-id='p-api']");
@@ -1949,6 +1959,8 @@ test(
     );
     // A nested folder still belongs to its closest parent project.
     assert.deepEqual(listedIds(), ["api-1", "api-2"]);
+    // The other project's conversation stays reachable from the board above.
+    assert.deepEqual(pinnedIds(), ["web-1"]);
     assert.equal(document.querySelector("#project-switcher-name").textContent.trim(), "api");
 
     // Browsing a project must not create a conversation.
@@ -1966,6 +1978,7 @@ test(
 
     document.querySelector("[data-project-id='']").click();
     await waitFor(() => listedIds().length === 3, "«همهٔ گفتگوها» did not clear the filter");
+    assert.deepEqual(pinnedIds(), [], "nothing should be pinned when everything is listed");
     assert.equal(
       rpcRequests.some((request) => request.method === "thread/start"),
       false,
@@ -2016,9 +2029,9 @@ test(
     const { window } = await createHarness(t, { fetchHandler });
     const document = window.document;
     const listedIds = () =>
-      [...document.querySelectorAll("#thread-list [data-thread-id]")].map(
-        (item) => item.dataset.threadId,
-      );
+      [...document.querySelectorAll("#thread-list [data-thread-id]")]
+        .filter((item) => !item.closest(".thread-pinned"))
+        .map((item) => item.dataset.threadId);
 
     await waitFor(() => listedIds().length === 1, "thread was not listed");
     await waitFor(
@@ -2037,6 +2050,95 @@ test(
     await waitFor(
       () => listedIds().length === 0,
       "the thread should not appear under the cwd-matched project",
+    );
+    assert.deepEqual(
+      [...document.querySelectorAll(".thread-pinned [data-thread-id]")].map(
+        (item) => item.dataset.threadId,
+      ),
+      ["pinned"],
+      "it should still be reachable from the board above",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
+
+test(
+  "a conversation read in another project stays reachable after switching away",
+  { concurrency: false },
+  async (t) => {
+    const now = Math.floor(Date.now() / 1000);
+    const threads = [
+      {
+        id: "web-old",
+        name: "بررسی migration",
+        cwd: "/workspace/web",
+        provider: "codex",
+        createdAt: now - 400_000,
+        // Deliberately stale: recency must come from opening it, not updatedAt.
+        updatedAt: now - 400_000,
+        status: { type: "idle" },
+      },
+      {
+        id: "api-1",
+        name: "رفع باگ احراز هویت",
+        cwd: "/workspace/api",
+        provider: "codex",
+        createdAt: now,
+        updatedAt: now,
+        status: { type: "idle" },
+      },
+    ];
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({
+          projects: [
+            { id: "p-api", name: "api", cwd: "/workspace/api", instructions: "" },
+            { id: "p-web", name: "web", cwd: "/workspace/web", instructions: "" },
+          ],
+          threadProjects: {},
+        });
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: threads, nextCursor: null } });
+      }
+      if (request.method === "thread/resume") {
+        const thread = threads.find((item) => item.id === request.params.threadId);
+        return jsonResponse({ result: { thread: { ...thread, turns: [] }, cwd: thread.cwd } });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+    const pinnedIds = () =>
+      [...document.querySelectorAll(".thread-pinned [data-thread-id]")].map(
+        (item) => item.dataset.threadId,
+      );
+
+    await waitFor(
+      () => document.querySelectorAll("#thread-list [data-thread-id]").length === 2,
+      "threads were not listed",
+    );
+
+    // Read the stale conversation from the web project, then move to api.
+    document.querySelector("[data-thread-id='web-old']").click();
+    await waitFor(
+      () => window.localStorage.getItem("codex-web-last-opened")?.includes("web-old"),
+      "opening a conversation was not recorded",
+    );
+    document.querySelector("#project-switcher").click();
+    document.querySelector("[data-project-id='p-api']").click();
+
+    await waitFor(
+      () => pinnedIds().includes("web-old"),
+      "the conversation just read in another project disappeared",
     );
     await new Promise((resolve) => setTimeout(resolve, 25));
   },

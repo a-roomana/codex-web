@@ -562,6 +562,25 @@ body.sidebar-collapsed .menu-button {
   scrollbar-color: var(--line) transparent;
 }
 
+.thread-pinned {
+  display: grid;
+  margin-bottom: 9px;
+  padding-bottom: 8px;
+  gap: 1px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.thread-pinned-heading {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  padding: 3px 4px 5px;
+  color: var(--muted-2);
+  background: var(--panel);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
 .thread-empty {
   padding: 32px 14px;
   color: var(--muted-2);
