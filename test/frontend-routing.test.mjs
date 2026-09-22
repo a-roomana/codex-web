@@ -2412,3 +2412,81 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );
+
+test(
+  "the composer chip switches provider and reloads that provider's models",
+  { concurrency: false },
+  async (t) => {
+    const modelRequests = [];
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({ projects: [], threadProjects: {} });
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      if (request.method === "model/list") {
+        modelRequests.push(request.params.provider);
+        return jsonResponse({
+          result: {
+            data:
+              request.params.provider === "claude"
+                ? [{ id: "sonnet", model: "sonnet", displayName: "Claude Sonnet" }]
+                : [{ id: "gpt-5", model: "gpt-5", displayName: "GPT-5" }],
+          },
+        });
+      }
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: [], nextCursor: null } });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+
+    document.querySelector("#model-chip").click();
+    await waitFor(
+      () => document.querySelector("#provider-options [data-provider-value='claude']"),
+      "the provider options were not rendered",
+    );
+    assert.equal(
+      document
+        .querySelector("#provider-options [data-provider-value='codex']")
+        .classList.contains("active"),
+      true,
+      "Codex should start selected",
+    );
+    // No conversation is open, so the new-chat caveat is not shown.
+    assert.equal(
+      document.querySelector("#provider-note").classList.contains("hidden"),
+      true,
+    );
+
+    document.querySelector("#provider-options [data-provider-value='claude']").click();
+    await waitFor(
+      () => modelRequests.includes("claude"),
+      "switching provider did not load that provider's models",
+    );
+    assert.equal(
+      JSON.parse(window.localStorage.getItem("codex-web-settings")).provider,
+      "claude",
+      "the provider choice was not persisted",
+    );
+
+    document.querySelector("#model-chip").click();
+    await waitFor(
+      () => document.querySelector("#model-options [data-model-value='sonnet']"),
+      "the Claude models were not offered after the switch",
+    );
+    assert.equal(
+      document.querySelector("#model-options [data-model-value='gpt-5']"),
+      null,
+      "Codex models should not linger after switching provider",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);

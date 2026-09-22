@@ -228,6 +228,8 @@ const elements = {
   modelChip: $("#model-chip"),
   modelLabel: $("#model-label"),
   modelOptions: $("#model-options"),
+  providerOptions: $("#provider-options"),
+  providerNote: $("#provider-note"),
   effortOptions: $("#effort-options"),
   runChipMenu: $("#run-chip-menu"),
   modelSelect: $("#model-select"),
@@ -2177,32 +2179,56 @@ function updateModelLabel(provider = state.settings.provider) {
   renderRunChipMenu();
 }
 
+function buildChoiceRow({ value, label, selected, dataset }) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.setAttribute("role", "option");
+  button.setAttribute("aria-selected", String(selected));
+  button.className = `project-item ${selected ? "active" : ""}`;
+  button.dataset[dataset] = value;
+
+  const check = document.createElement("span");
+  check.className = "project-item-check";
+  check.textContent = selected ? "✓" : "";
+  check.setAttribute("aria-hidden", "true");
+
+  const name = document.createElement("span");
+  name.className = "project-item-name";
+  name.textContent = label;
+  button.append(check, name);
+  return button;
+}
+
 function renderRunChipMenu() {
   const provider = state.settings.provider;
   const models = state.modelsByProvider[provider] || [];
   const selectedModel = state.settings.modelByProvider[provider] || "";
 
+  elements.providerOptions.replaceChildren();
+  for (const candidate of ["codex", "claude"]) {
+    elements.providerOptions.append(
+      buildChoiceRow({
+        value: candidate,
+        label: candidate === "claude" ? "Claude Code CLI" : "Codex CLI",
+        selected: candidate === provider,
+        dataset: "providerValue",
+      }),
+    );
+  }
+  // An open conversation keeps the provider it was started with.
+  elements.providerNote.classList.toggle("hidden", !state.currentThreadId);
+
   elements.modelOptions.replaceChildren();
   for (const model of [{ model: "", displayName: `پیش‌فرض ${providerLabel(provider)}` }, ...models]) {
     const value = model.model || model.id || "";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.setAttribute("role", "option");
-    const selected = value === selectedModel;
-    button.setAttribute("aria-selected", String(selected));
-    button.className = `project-item ${selected ? "active" : ""}`;
-    button.dataset.modelValue = value;
-
-    const check = document.createElement("span");
-    check.className = "project-item-check";
-    check.textContent = selected ? "✓" : "";
-    check.setAttribute("aria-hidden", "true");
-
-    const name = document.createElement("span");
-    name.className = "project-item-name";
-    name.textContent = `${model.displayName}${model.isDefault ? " — پیش‌فرض" : ""}`;
-    button.append(check, name);
-    elements.modelOptions.append(button);
+    elements.modelOptions.append(
+      buildChoiceRow({
+        value,
+        label: `${model.displayName}${model.isDefault ? " — پیش‌فرض" : ""}`,
+        selected: value === selectedModel,
+        dataset: "modelValue",
+      }),
+    );
   }
 
   elements.effortOptions.replaceChildren();
@@ -2216,6 +2242,18 @@ function renderRunChipMenu() {
     button.textContent = EFFORT_LABELS[value];
     elements.effortOptions.append(button);
   }
+}
+
+function setRunProvider(provider) {
+  if (provider !== "codex" && provider !== "claude") return;
+  if (provider === state.settings.provider) return;
+  state.settings.provider = provider;
+  persistSettings();
+  state.models = state.modelsByProvider[provider] || [];
+  updateSettingsUi();
+  updateConnection();
+  void loadModels(provider);
+  void refreshProviderStatus();
 }
 
 function setRunSetting({ model, effort }) {
@@ -6406,6 +6444,11 @@ for (const descriptor of projectMenus) {
   });
 }
 elements.modelChip.addEventListener("click", () => toggleProjectMenu(runChipMenu));
+elements.providerOptions.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-provider-value]");
+  if (!option) return;
+  setRunProvider(option.dataset.providerValue);
+});
 elements.modelOptions.addEventListener("click", (event) => {
   const option = event.target.closest("[data-model-value]");
   if (!option) return;

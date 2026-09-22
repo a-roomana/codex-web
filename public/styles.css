@@ -2614,6 +2614,13 @@ button.context-chip:hover {
   max-height: 200px;
 }
 
+.run-chip-note {
+  margin: 0;
+  padding: 0 8px 4px;
+  color: var(--muted-2);
+  font-size: 0.66rem;
+}
+
 .effort-options {
   display: flex;
   padding: 2px 4px 4px;
