@@ -176,6 +176,9 @@ async function createHarness(t, {
         getItem(key) {
           return values.get(key) ?? null;
         },
+        removeItem(key) {
+          values.delete(key);
+        },
         setItem(key, value) {
           values.set(key, String(value));
         },
@@ -1860,6 +1863,181 @@ test(
     assert.match(document.querySelector("#usage-dialog").textContent, /بازهٔ ۱ هفته‌ای/);
     document.querySelector("#usage-close").click();
     assert.equal(document.querySelector("#usage-dialog").open, false);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
+
+test(
+  "the project switcher groups conversations by folder and browses without starting a chat",
+  { concurrency: false },
+  async (t) => {
+    const now = Math.floor(Date.now() / 1000);
+    const rpcRequests = [];
+    const threads = [
+      {
+        id: "api-1",
+        name: "رفع باگ احراز هویت",
+        cwd: "/workspace/api",
+        provider: "codex",
+        createdAt: now,
+        updatedAt: now,
+        status: { type: "idle" },
+      },
+      {
+        id: "api-2",
+        name: "اضافه‌کردن ایندکس",
+        cwd: "/workspace/api/db",
+        provider: "codex",
+        createdAt: now,
+        updatedAt: now - 60,
+        status: { type: "idle" },
+      },
+      {
+        id: "web-1",
+        name: "بازطراحی هدر",
+        cwd: "/workspace/web",
+        provider: "claude",
+        createdAt: now,
+        updatedAt: now - 120,
+        status: { type: "idle" },
+      },
+    ];
+    const projects = [
+      { id: "p-api", name: "api", cwd: "/workspace/api", instructions: "" },
+      { id: "p-web", name: "web", cwd: "/workspace/web", instructions: "" },
+    ];
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        // Nothing is assigned by hand: grouping must come from cwd alone.
+        return jsonResponse({ projects, threadProjects: {} });
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      rpcRequests.push(request);
+      if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: threads, nextCursor: null } });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+    const listedIds = () =>
+      [...document.querySelectorAll("#thread-list [data-thread-id]")].map(
+        (item) => item.dataset.threadId,
+      );
+
+    await waitFor(() => listedIds().length === 3, "threads were not listed");
+
+    // The switcher counts conversations per project using cwd matching.
+    const apiOption = document.querySelector("[data-project-id='p-api']");
+    assert.equal(apiOption.querySelector(".project-item-count").textContent, "۲");
+    assert.equal(
+      document.querySelector("[data-project-id='p-web'] .project-item-count").textContent,
+      "۱",
+    );
+
+    apiOption.click();
+    await waitFor(
+      () => listedIds().length === 2,
+      "selecting a project did not filter the conversation list",
+    );
+    // A nested folder still belongs to its closest parent project.
+    assert.deepEqual(listedIds(), ["api-1", "api-2"]);
+    assert.equal(document.querySelector("#project-switcher-name").textContent.trim(), "api");
+
+    // Browsing a project must not create a conversation.
+    assert.equal(
+      rpcRequests.some((request) => request.method === "thread/start"),
+      false,
+      "switching projects should not start a chat",
+    );
+
+    document.querySelector("[data-project-id='p-web']").click();
+    await waitFor(
+      () => listedIds().join() === "web-1",
+      "switching to the other project did not update the list",
+    );
+
+    document.querySelector("[data-project-id='']").click();
+    await waitFor(() => listedIds().length === 3, "«همهٔ گفتگوها» did not clear the filter");
+    assert.equal(
+      rpcRequests.some((request) => request.method === "thread/start"),
+      false,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
+
+test(
+  "an explicit project assignment overrides folder matching",
+  { concurrency: false },
+  async (t) => {
+    const now = Math.floor(Date.now() / 1000);
+    const threads = [
+      {
+        id: "pinned",
+        name: "گفتگوی منتسب",
+        cwd: "/workspace/api",
+        provider: "codex",
+        createdAt: now,
+        updatedAt: now,
+        status: { type: "idle" },
+      },
+    ];
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({
+          projects: [
+            { id: "p-api", name: "api", cwd: "/workspace/api", instructions: "" },
+            { id: "p-web", name: "web", cwd: "/workspace/web", instructions: "" },
+          ],
+          threadProjects: { pinned: "p-web" },
+        });
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: threads, nextCursor: null } });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+    const listedIds = () =>
+      [...document.querySelectorAll("#thread-list [data-thread-id]")].map(
+        (item) => item.dataset.threadId,
+      );
+
+    await waitFor(() => listedIds().length === 1, "thread was not listed");
+    await waitFor(
+      () =>
+        document.querySelector("[data-project-id='p-web'] .project-item-count")
+          ?.textContent === "۱",
+      "explicit assignment was not counted under the assigned project",
+    );
+    assert.equal(
+      document.querySelector("[data-project-id='p-api'] .project-item-count").textContent,
+      "۰",
+      "the cwd-matched project should lose to the explicit assignment",
+    );
+
+    document.querySelector("[data-project-id='p-api']").click();
+    await waitFor(
+      () => listedIds().length === 0,
+      "the thread should not appear under the cwd-matched project",
+    );
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );

@@ -300,58 +300,149 @@ body.sidebar-collapsed .menu-button {
   transform: translateY(1px);
 }
 
-.project-sidebar {
-  display: grid;
-  margin: 1px 0 12px;
-  gap: 3px;
+.project-switcher {
+  position: relative;
+  margin: 1px 0 10px;
 }
 
-.project-sidebar-heading {
+.project-switcher-trigger {
   display: flex;
-  min-height: 30px;
-  padding: 0 7px;
+  width: 100%;
+  min-height: 36px;
+  padding: 5px 10px;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-soft);
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  font-size: 0.8125rem;
+  text-align: start;
+}
+
+.project-switcher-trigger:hover {
+  background: var(--surface-raised);
+  border-color: var(--line);
+}
+
+.project-switcher-trigger[aria-expanded="true"] {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.project-switcher-trigger svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.65;
+}
+
+.project-switcher-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-switcher-count {
   color: var(--muted-2);
-  font-size: 0.75rem;
-  font-weight: 650;
+  font-size: 0.6875rem;
 }
 
-.project-add-button {
-  width: 27px;
-  height: 27px;
+.project-switcher-caret {
+  color: var(--muted-2);
+  font-size: 0.7rem;
+}
+
+.project-switcher-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 5px);
+  inset-inline: 0;
+  display: flex;
+  padding: 7px;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.project-switcher-search {
+  display: flex;
+  height: 32px;
+  padding: 0 9px;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted-2);
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.project-switcher-search input {
+  width: 100%;
+  min-width: 0;
   padding: 0;
-  color: var(--muted);
   background: transparent;
-  border-radius: 7px;
-  font-size: 1rem;
+  border: 0;
+  outline: 0;
+  font-size: 0.8125rem;
 }
 
-.project-add-button:hover {
-  color: var(--text);
-  background: var(--panel-3);
-}
-
-.project-list {
+.project-switcher-options {
   display: grid;
-  max-height: 158px;
+  max-height: 264px;
   gap: 2px;
   overflow-y: auto;
   scrollbar-width: thin;
 }
 
-.project-all-button,
+.project-switcher-empty {
+  margin: 0;
+  padding: 12px 10px;
+  color: var(--muted-2);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.project-switcher-add {
+  display: flex;
+  min-height: 32px;
+  padding: 5px 9px;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  background: transparent;
+  border-top: 1px solid var(--line-soft);
+  border-radius: 0 0 7px 7px;
+  font-size: 0.8125rem;
+  text-align: start;
+}
+
+.project-switcher-add:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
 .project-item {
   display: flex;
   width: 100%;
-  min-height: 34px;
+  min-height: 32px;
   padding: 5px 8px;
   align-items: center;
   gap: 8px;
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 8px;
   font-size: 0.8125rem;
   text-align: start;
 }
@@ -368,30 +459,22 @@ body.sidebar-collapsed .menu-button {
   flex: 1;
 }
 
-.project-all-button:hover,
 .project-item:hover,
-.project-all-button.active,
 .project-item.active {
   color: var(--text-soft);
   background: var(--panel-2);
   border-color: var(--line-soft);
 }
 
-.project-all-button.active,
 .project-item.active {
   color: var(--accent-strong);
 }
 
-.project-all-button svg,
-.project-item svg {
-  width: 16px;
-  height: 16px;
+.project-item-check {
+  width: 12px;
   flex: 0 0 auto;
-  fill: none;
-  stroke: currentcolor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.65;
+  color: var(--accent-strong);
+  font-size: 0.75rem;
 }
 
 .project-item-name {
@@ -400,6 +483,15 @@ body.sidebar-collapsed .menu-button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-item-activity {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  background: var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 7px rgb(var(--accent-rgb) / 0.75);
 }
 
 .project-item-count {
@@ -481,15 +573,20 @@ body.sidebar-collapsed .menu-button {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 58px;
-  margin-bottom: 3px;
-  padding: 9px 11px;
+  min-height: 38px;
+  margin-bottom: 2px;
+  padding: 7px 11px;
   flex-direction: column;
   align-items: stretch;
+  justify-content: center;
   text-align: start;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 11px;
+  border-radius: 10px;
+}
+
+.thread-item.with-meta {
+  min-height: 48px;
 }
 
 .thread-item:hover {
@@ -504,8 +601,8 @@ body.sidebar-collapsed .menu-button {
 
 .thread-item.active::before {
   position: absolute;
-  top: 14px;
-  bottom: 14px;
+  top: 9px;
+  bottom: 9px;
   right: 0;
   width: 3px;
   background: var(--neon-gradient);
@@ -615,18 +712,41 @@ body.sidebar-collapsed .menu-button {
 .thread-item-meta {
   display: flex;
   justify-content: space-between;
-  margin-top: 2px;
+  margin-top: 1px;
   gap: 8px;
   color: var(--muted-2);
   font-size: 0.75rem;
 }
 
-.thread-item-cwd {
-  direction: ltr;
+.thread-item-project {
+  min-width: 0;
   overflow: hidden;
-  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.thread-item-time {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.thread-load-more {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 6px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px dashed var(--line-soft);
+  border-radius: 10px;
+  font-size: 0.78rem;
+}
+
+.thread-load-more:hover {
+  color: var(--text-soft);
+  background: var(--panel-2);
+  border-style: solid;
 }
 
 .sidebar-footer {

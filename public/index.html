@@ -48,27 +48,49 @@
           گفتگوی تازه
         </button>
 
-        <section class="project-sidebar" aria-labelledby="projects-label">
-          <div class="project-sidebar-heading">
-            <span id="projects-label">پروژه‌ها</span>
-            <button
-              class="project-add-button"
-              id="project-add"
-              type="button"
-              aria-label="ساخت پروژه"
-              title="ساخت پروژه"
-            >
-              ＋
+        <div class="project-switcher">
+          <button
+            class="project-switcher-trigger"
+            id="project-switcher"
+            type="button"
+            aria-haspopup="listbox"
+            aria-expanded="false"
+            aria-controls="project-switcher-menu"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />
+            </svg>
+            <span class="project-switcher-name" id="project-switcher-name" dir="auto">
+              همهٔ گفتگوها
+            </span>
+            <span class="project-switcher-count" id="project-switcher-count"></span>
+            <span class="project-switcher-caret" aria-hidden="true">▾</span>
+          </button>
+          <div
+            class="project-switcher-menu hidden"
+            id="project-switcher-menu"
+            role="listbox"
+            aria-label="پروژه‌ها"
+          >
+            <label class="project-switcher-search">
+              <span aria-hidden="true">⌕</span>
+              <input
+                id="project-switcher-filter"
+                type="search"
+                placeholder="فیلتر پروژه…"
+                autocomplete="off"
+              />
+            </label>
+            <div class="project-switcher-options" id="project-list"></div>
+            <p class="project-switcher-empty hidden" id="project-switcher-empty">
+              پروژه‌ای پیدا نشد.
+            </p>
+            <button class="project-switcher-add" id="project-add" type="button">
+              <span aria-hidden="true">＋</span>
+              پروژهٔ تازه
             </button>
           </div>
-          <button class="project-all-button active" id="project-all" type="button">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 6.5h16M4 12h16M4 17.5h16" />
-            </svg>
-            <span>همهٔ گفتگوها</span>
-          </button>
-          <div class="project-list" id="project-list"></div>
-        </section>
+        </div>
 
         <label class="search-box">
           <span aria-hidden="true">⌕</span>

@@ -261,7 +261,6 @@ const elements = {
   claudePermissionMode: $("#claude-permission-mode"),
   previousUserMessage: $("#previous-user-message"),
   projectAdd: $("#project-add"),
-  projectAll: $("#project-all"),
   projectCancel: $("#project-cancel"),
   projectCwd: $("#project-cwd"),
   projectDelete: $("#project-delete"),
@@ -274,6 +273,12 @@ const elements = {
   projectList: $("#project-list"),
   projectName: $("#project-name"),
   projectSave: $("#project-save"),
+  projectSwitcher: $("#project-switcher"),
+  projectSwitcherCount: $("#project-switcher-count"),
+  projectSwitcherEmpty: $("#project-switcher-empty"),
+  projectSwitcherFilter: $("#project-switcher-filter"),
+  projectSwitcherMenu: $("#project-switcher-menu"),
+  projectSwitcherName: $("#project-switcher-name"),
   prompt: $("#prompt"),
   promptQueue: $("#prompt-queue"),
   promptQueueClear: $("#prompt-queue-clear"),
@@ -343,6 +348,7 @@ const defaultSettings = {
 const SETTINGS_VERSION = 5;
 const ACCENT_PALETTES = new Set(["cyan", "red", "purple", "green"]);
 const ACTIVE_PROJECT_KEY = "codex-web-active-project";
+const THREAD_LIST_PAGE_SIZE = 100;
 
 function loadActiveProjectId() {
   try {
@@ -414,6 +420,8 @@ const state = {
   threadActivity: new Map(),
   threadEventBacklog: new Map(),
   threadRuntime: new Map(),
+  threadListHasMore: false,
+  threadListLimit: THREAD_LIST_PAGE_SIZE,
   threadProjects: new Map(),
   threadTokenUsage: new Map(),
   threads: [],
@@ -2253,6 +2261,43 @@ function projectById(projectId) {
   return state.projects.find((project) => project.id === projectId) || null;
 }
 
+function normalizeCwd(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const withoutTrailing = text.replace(/[\\/]+$/, "");
+  return withoutTrailing || text;
+}
+
+// Threads are only linked to a project when the user assigns one explicitly, so
+// fall back to matching the thread's cwd against project folders. An exact match
+// wins over a parent folder, and a deeper parent wins over a shallower one.
+function resolveThreadProject(thread) {
+  if (!thread) return null;
+  const explicit = state.threadProjects.get(thread.id);
+  if (explicit && projectById(explicit)) return explicit;
+  const cwd = normalizeCwd(thread.cwd);
+  if (!cwd) return null;
+  let bestId = null;
+  let bestLength = -1;
+  for (const project of state.projects) {
+    const base = normalizeCwd(project.cwd);
+    if (!base) continue;
+    if (cwd !== base && !cwd.startsWith(`${base}/`) && !cwd.startsWith(`${base}\\`)) {
+      continue;
+    }
+    if (base.length > bestLength) {
+      bestId = project.id;
+      bestLength = base.length;
+    }
+  }
+  return bestId;
+}
+
+function threadsForProject(projectId) {
+  if (!projectId) return state.threads;
+  return state.threads.filter((thread) => resolveThreadProject(thread) === projectId);
+}
+
 function projectIdFor(key = draftKey()) {
   if (state.currentThreadId && key === state.currentThreadId) {
     return state.threadProjects.get(state.currentThreadId) || null;
@@ -2288,53 +2333,133 @@ function persistActiveProject() {
 }
 
 function updateProjectHeader() {
-  const project = currentProject();
+  const assigned = currentProject();
+  const thread = state.currentThreadId ? threadById(state.currentThreadId) : null;
+  const project = assigned || projectById(resolveThreadProject(thread));
   elements.headerProjectLabel.textContent = project?.name || "پروژه";
-  elements.headerProject.classList.toggle("assigned", Boolean(project));
-  elements.headerProject.title = project
-    ? `پروژه: ${project.name}`
-    : "افزودن گفتگو به پروژه";
+  elements.headerProject.classList.toggle("assigned", Boolean(assigned));
+  elements.headerProject.title = assigned
+    ? `پروژه: ${assigned.name}`
+    : project
+      ? `بر اساس پوشه در «${project.name}» دسته‌بندی شده — برای انتساب کلیک کنید`
+      : "افزودن گفتگو به پروژه";
   elements.shareChat.disabled = !state.currentThreadId;
+}
+
+function projectHasActivity(projectId) {
+  return state.threads.some((thread) => {
+    if (resolveThreadProject(thread) !== projectId) return false;
+    const phase = state.threadActivity.get(thread.id)?.phase;
+    return phase === "running" || phase === "needs-input";
+  });
 }
 
 function renderProjects() {
   elements.projectList.replaceChildren();
-  elements.projectAll.classList.toggle("active", !state.activeProjectId);
+  const filter = elements.projectSwitcherFilter.value.trim().toLowerCase();
   const counts = new Map();
-  for (const projectId of state.threadProjects.values()) {
-    counts.set(projectId, (counts.get(projectId) || 0) + 1);
+  for (const thread of state.threads) {
+    const projectId = resolveThreadProject(thread);
+    if (projectId) counts.set(projectId, (counts.get(projectId) || 0) + 1);
   }
-  for (const project of state.projects) {
+
+  const makeRow = (project) => {
     const row = document.createElement("div");
     row.className = "project-row";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `project-item ${
-      project.id === state.activeProjectId ? "active" : ""
-    }`;
+    button.setAttribute("role", "option");
+    const selected = project.id === (state.activeProjectId || "");
+    button.setAttribute("aria-selected", String(selected));
+    button.className = `project-item ${selected ? "active" : ""}`;
     button.dataset.projectId = project.id;
-    button.innerHTML = `
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" /></svg>
-    `;
+
+    const check = document.createElement("span");
+    check.className = "project-item-check";
+    check.textContent = selected ? "✓" : "";
+    check.setAttribute("aria-hidden", "true");
+
     const name = document.createElement("span");
     name.className = "project-item-name";
     name.dir = "auto";
     name.textContent = project.name;
+    if (project.cwd) button.title = project.cwd;
+
     const count = document.createElement("span");
     count.className = "project-item-count";
-    count.textContent = (counts.get(project.id) || 0).toLocaleString("fa-IR");
-    button.append(name, count);
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "project-item-edit";
-    edit.dataset.projectEdit = project.id;
-    edit.setAttribute("aria-label", `ویرایش پروژهٔ ${project.name}`);
-    edit.title = "ویرایش پروژه";
-    edit.textContent = "⋯";
-    row.append(button, edit);
-    elements.projectList.append(row);
-  }
+    count.textContent = project.count.toLocaleString("fa-IR");
+
+    button.append(check, name);
+    if (project.id && projectHasActivity(project.id)) {
+      const dot = document.createElement("span");
+      dot.className = "project-item-activity";
+      dot.title = "این پروژه گفتگوی فعال دارد";
+      dot.setAttribute("aria-label", "گفتگوی فعال");
+      button.append(dot);
+    }
+    button.append(count);
+    row.append(button);
+
+    if (project.id) {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "project-item-edit";
+      edit.dataset.projectEdit = project.id;
+      edit.setAttribute("aria-label", `ویرایش پروژهٔ ${project.name}`);
+      edit.title = "ویرایش پروژه";
+      edit.textContent = "⋯";
+      row.append(edit);
+    }
+    return row;
+  };
+
+  const rows = [
+    { id: "", name: "همهٔ گفتگوها", cwd: "", count: state.threads.length },
+    ...state.projects.map((project) => ({
+      ...project,
+      count: counts.get(project.id) || 0,
+    })),
+  ].filter(
+    (project) =>
+      !filter ||
+      !project.id ||
+      `${project.name} ${project.cwd || ""}`.toLowerCase().includes(filter),
+  );
+
+  for (const project of rows) elements.projectList.append(makeRow(project));
+  elements.projectSwitcherEmpty.classList.toggle("hidden", rows.length > 0);
+
+  const active = projectById(state.activeProjectId);
+  elements.projectSwitcherName.textContent = active ? active.name : "همهٔ گفتگوها";
+  elements.projectSwitcherCount.textContent = (
+    active ? counts.get(active.id) || 0 : state.threads.length
+  ).toLocaleString("fa-IR");
+  elements.projectSwitcher.title = active?.cwd || "فیلتر بر اساس پروژه";
   updateProjectHeader();
+}
+
+function openProjectSwitcher() {
+  elements.projectSwitcherMenu.classList.remove("hidden");
+  elements.projectSwitcher.setAttribute("aria-expanded", "true");
+  renderProjects();
+  setTimeout(() => elements.projectSwitcherFilter.focus(), 0);
+}
+
+function closeProjectSwitcher({ focusTrigger = false } = {}) {
+  if (elements.projectSwitcherMenu.classList.contains("hidden")) return;
+  elements.projectSwitcherMenu.classList.add("hidden");
+  elements.projectSwitcher.setAttribute("aria-expanded", "false");
+  elements.projectSwitcherFilter.value = "";
+  renderProjects();
+  if (focusTrigger) elements.projectSwitcher.focus();
+}
+
+function toggleProjectSwitcher() {
+  if (elements.projectSwitcherMenu.classList.contains("hidden")) {
+    openProjectSwitcher();
+  } else {
+    closeProjectSwitcher({ focusTrigger: true });
+  }
 }
 
 async function loadProjects() {
@@ -2390,8 +2515,12 @@ async function saveProject(event) {
     });
     elements.projectDialog.close();
     await loadProjects();
-    if (!projectId) selectProject(result.project.id);
-    else updateProjectHeader();
+    if (!projectId) {
+      selectProject(result.project.id);
+      newChat({ projectId: result.project.id });
+    } else {
+      updateProjectHeader();
+    }
   } catch (error) {
     showError(error, projectId ? "ویرایش پروژه" : "ساخت پروژه");
   } finally {
@@ -2425,14 +2554,11 @@ async function deleteProject() {
 function selectProject(projectId) {
   const nextProjectId = projectId && projectById(projectId) ? projectId : null;
   state.activeProjectId = nextProjectId;
+  state.threadListLimit = THREAD_LIST_PAGE_SIZE;
   persistActiveProject();
+  closeProjectSwitcher();
   renderProjects();
   renderThreadList();
-  const currentMatches =
-    state.currentThreadId &&
-    (state.threadProjects.get(state.currentThreadId) || null) === nextProjectId;
-  if (nextProjectId && !currentMatches) newChat({ projectId: nextProjectId });
-  else closeSidebar();
 }
 
 function renderAssignProjectOptions() {
@@ -2809,85 +2935,123 @@ function announceThreadCompletion(threadId, status) {
   }
 }
 
+function buildThreadItem(thread, { showProject = false } = {}) {
+  const button = document.createElement("button");
+  button.className = `thread-item ${thread.id === state.currentThreadId ? "active" : ""}`;
+  button.dataset.threadId = thread.id;
+
+  const title = document.createElement("span");
+  title.className = "thread-item-title";
+  title.dir = "auto";
+  title.textContent = threadDisplayTitle(thread);
+
+  const provider = document.createElement("span");
+  provider.className = "thread-provider";
+  provider.dir = "ltr";
+  provider.textContent = thread.provider === "claude" ? "Claude" : "Codex";
+  provider.title = thread.provider === "claude" ? "Claude Code CLI" : "Codex CLI";
+
+  const heading = document.createElement("span");
+  heading.className = "thread-item-heading";
+  heading.append(title, provider);
+
+  const presentation = threadActivityPresentation(thread.id);
+  if (presentation) {
+    const activity = document.createElement("span");
+    activity.className = `thread-activity ${presentation.className}`;
+    activity.textContent = presentation.label;
+    activity.setAttribute("aria-label", presentation.label);
+    heading.append(activity);
+  }
+
+  const time = document.createElement("span");
+  time.className = "thread-item-time";
+  time.textContent = formatRelativeTime(thread.updatedAt || thread.createdAt);
+  heading.append(time);
+  button.append(heading);
+
+  // Inside a single project the folder is identical on every row, so it is only
+  // worth the extra line when rows can come from anywhere.
+  if (showProject) {
+    const meta = document.createElement("span");
+    meta.className = "thread-item-meta";
+    const project = projectById(resolveThreadProject(thread));
+    const label = document.createElement("span");
+    label.className = "thread-item-project";
+    label.dir = "auto";
+    label.textContent = project ? project.name : shortPath(thread.cwd, 23);
+    label.title = thread.cwd || "";
+    meta.append(label);
+    button.append(meta);
+    button.classList.add("with-meta");
+  }
+  return button;
+}
+
 function renderThreadList() {
   elements.threadList.replaceChildren();
-  const threads = state.activeProjectId
-    ? state.threads.filter(
-        (thread) => state.threadProjects.get(thread.id) === state.activeProjectId,
-      )
-    : state.threads;
+  const searching = Boolean(elements.threadSearch.value.trim());
+  // Search always spans every project; browsing is scoped to the selected one.
+  const threads = searching ? state.threads : threadsForProject(state.activeProjectId);
+
   if (!threads.length) {
     const empty = document.createElement("div");
     empty.className = "thread-empty";
-    empty.textContent = state.activeProjectId
-      ? "هنوز گفتگویی در این پروژه نیست."
-      : "هنوز گفتگویی پیدا نشد.";
+    empty.textContent = searching
+      ? "گفتگویی با این جستجو پیدا نشد."
+      : state.activeProjectId
+        ? "هنوز گفتگویی در این پروژه نیست."
+        : "هنوز گفتگویی پیدا نشد.";
     elements.threadList.append(empty);
     return;
   }
 
   for (const thread of threads) {
-    const button = document.createElement("button");
-    button.className = `thread-item ${thread.id === state.currentThreadId ? "active" : ""}`;
-    button.dataset.threadId = thread.id;
+    elements.threadList.append(
+      buildThreadItem(thread, {
+        showProject: searching || !state.activeProjectId,
+      }),
+    );
+  }
 
-    const title = document.createElement("span");
-    title.className = "thread-item-title";
-    title.dir = "auto";
-    title.textContent = threadDisplayTitle(thread);
-
-    const provider = document.createElement("span");
-    provider.className = "thread-provider";
-    provider.dir = "ltr";
-    provider.textContent = thread.provider === "claude" ? "Claude" : "Codex";
-    provider.title = thread.provider === "claude" ? "Claude Code CLI" : "Codex CLI";
-
-    const heading = document.createElement("span");
-    heading.className = "thread-item-heading";
-    heading.append(title, provider);
-    const presentation = threadActivityPresentation(thread.id);
-    if (presentation) {
-      const activity = document.createElement("span");
-      activity.className = `thread-activity ${presentation.className}`;
-      activity.textContent = presentation.label;
-      activity.setAttribute("aria-label", presentation.label);
-      heading.append(activity);
-    }
-
-    const meta = document.createElement("span");
-    meta.className = "thread-item-meta";
-    const cwd = document.createElement("span");
-    cwd.className = "thread-item-cwd";
-    cwd.textContent = shortPath(thread.cwd, 23);
-    cwd.title = thread.cwd || "";
-    const time = document.createElement("span");
-    time.textContent = formatRelativeTime(thread.updatedAt || thread.createdAt);
-    meta.append(cwd, time);
-
-    button.append(heading, meta);
-    elements.threadList.append(button);
+  if (state.threadListHasMore && !searching) {
+    const more = document.createElement("button");
+    more.className = "thread-load-more";
+    more.id = "thread-load-more";
+    more.type = "button";
+    more.textContent = "موارد قدیمی‌تر";
+    elements.threadList.append(more);
   }
 }
 
 async function refreshThreads(searchTerm = elements.threadSearch.value.trim()) {
   const refreshVersion = ++state.threadsRefreshVersion;
+  const limit = state.threadListLimit;
   try {
     const result = await rpc("thread/list", {
       archived: false,
-      limit: 100,
+      limit,
       searchTerm: searchTerm || null,
       sortDirection: "desc",
       sortKey: "updated_at",
     });
     if (refreshVersion !== state.threadsRefreshVersion) return;
     state.threads = result.data || [];
+    // Neither provider returns a cursor, so a full page means there may be more.
+    state.threadListHasMore = state.threads.length >= limit;
     for (const thread of state.threads) syncThreadActivity(thread);
+    renderProjects();
     renderThreadList();
     updateAttentionUi();
   } catch (error) {
     if (refreshVersion !== state.threadsRefreshVersion) return;
     showError(error, "دریافت فهرست گفتگوها");
   }
+}
+
+async function loadMoreThreads() {
+  state.threadListLimit += THREAD_LIST_PAGE_SIZE;
+  await refreshThreads();
 }
 
 function clearConversation() {
@@ -6033,18 +6197,38 @@ elements.promptQueueItems.addEventListener("click", (event) => {
 elements.promptQueueClear.addEventListener("click", clearPromptQueue);
 elements.stopTurn.addEventListener("click", stopTurn);
 elements.newChat.addEventListener("click", () => newChat());
-elements.projectAdd.addEventListener("click", () => openProjectDialog());
-elements.projectAll.addEventListener("click", () => selectProject(null));
+elements.projectAdd.addEventListener("click", () => {
+  closeProjectSwitcher();
+  openProjectDialog();
+});
+elements.projectSwitcher.addEventListener("click", toggleProjectSwitcher);
+elements.projectSwitcherFilter.addEventListener("input", renderProjects);
+elements.projectSwitcherFilter.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeProjectSwitcher({ focusTrigger: true });
+  }
+});
+document.addEventListener("click", (event) => {
+  if (elements.projectSwitcherMenu.classList.contains("hidden")) return;
+  if (event.target.closest(".project-switcher")) return;
+  closeProjectSwitcher();
+});
 elements.projectList.addEventListener("click", (event) => {
   const edit = event.target.closest("[data-project-edit]");
   if (edit) {
+    closeProjectSwitcher();
     openProjectDialog(projectById(edit.dataset.projectEdit));
     return;
   }
   const project = event.target.closest("[data-project-id]");
-  if (project) selectProject(project.dataset.projectId);
+  if (project) selectProject(project.dataset.projectId || null);
 });
 elements.threadList.addEventListener("click", (event) => {
+  if (event.target.closest("#thread-load-more")) {
+    loadMoreThreads();
+    return;
+  }
   const button = event.target.closest("[data-thread-id]");
   if (button) openThread(button.dataset.threadId);
 });
