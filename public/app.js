@@ -334,6 +334,10 @@ const defaultSettings = {
 const SETTINGS_VERSION = 6;
 const ACCENT_PALETTES = new Set(["cyan", "red", "purple", "green"]);
 const ACTIVE_PROJECT_KEY = "codex-web-active-project";
+// The project a new conversation should start in: the last one deliberately
+// chosen for a chat, which is not the same thing as the sidebar's browse
+// filter. Absent means "never chosen"; "" means "chosen: no project".
+const LAST_PROJECT_KEY = "codex-web-last-project";
 const THREAD_LIST_PAGE_SIZE = 100;
 const LAST_OPENED_KEY = "codex-web-last-opened";
 // Enough to outlive a working session without letting the map grow forever.
@@ -364,8 +368,27 @@ function loadActiveProjectId() {
   }
 }
 
+function loadLastProjectId() {
+  try {
+    const saved = localStorage.getItem(LAST_PROJECT_KEY);
+    if (saved === null) return undefined;
+    return saved || null;
+  } catch {
+    return undefined;
+  }
+}
+
+function persistLastProject(projectId) {
+  try {
+    localStorage.setItem(LAST_PROJECT_KEY, projectId || "");
+  } catch {
+    // The choice still applies to this tab when storage is unavailable.
+  }
+}
+
 const state = {
   activeProjectId: loadActiveProjectId(),
+  lastProjectId: loadLastProjectId(),
   activeInteractionKey: null,
   busy: false,
   collaborationModes: [],
@@ -2757,6 +2780,8 @@ async function saveProject(event) {
     await loadProjects();
     if (!projectId) {
       selectProject(result.project.id);
+      state.lastProjectId = result.project.id;
+      persistLastProject(result.project.id);
       newChat({ projectId: result.project.id });
     } else {
       updateProjectChip();
@@ -2781,6 +2806,10 @@ async function deleteProject() {
     if (state.activeProjectId === projectId) {
       state.activeProjectId = null;
       persistActiveProject();
+    }
+    if (state.lastProjectId === projectId) {
+      state.lastProjectId = null;
+      persistLastProject(null);
     }
     await loadProjects();
     updateProjectChip();
@@ -2816,6 +2845,8 @@ async function assignChatProject(projectId) {
       if (nextId) state.draftProjects.set(key, nextId);
       else state.draftProjects.delete(key);
     }
+    state.lastProjectId = nextId;
+    persistLastProject(nextId);
     renderProjects();
     renderThreadList();
     // The chip label and the welcome copy both derive from the project, and
@@ -3962,7 +3993,9 @@ function restoreCurrentViewUrl() {
 function newChat({
   draftId = null,
   historyMode = "push",
-  projectId = state.activeProjectId,
+  projectId = state.lastProjectId === undefined
+    ? state.activeProjectId
+    : state.lastProjectId,
 } = {}) {
   if (!state.currentThreadId && attachmentUploadsForDraft() > 0) {
     toast("برای حفظ فایل‌های این پیش‌نویس، تا پایان افزودن آن‌ها صبر کنید.", "warning");

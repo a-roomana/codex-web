@@ -2505,3 +2505,195 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );
+
+test(
+  "a new conversation starts in the project last chosen for a chat",
+  { concurrency: false },
+  async (t) => {
+    const now = Math.floor(Date.now() / 1000);
+    const rpcRequests = [];
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({
+          projects: [
+            { id: "p-api", name: "api", cwd: "/workspace/api", instructions: "" },
+            { id: "p-web", name: "web", cwd: "/workspace/web", instructions: "" },
+          ],
+          threadProjects: {},
+        });
+      }
+      if (path === "/api/project-threads") return jsonResponse(JSON.parse(options.body));
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      rpcRequests.push(request);
+      if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: [], nextCursor: null } });
+      }
+      if (request.method === "thread/start") {
+        return jsonResponse({
+          result: {
+            thread: {
+              id: "sticky-thread",
+              cwd: request.params.cwd,
+              createdAt: now,
+              updatedAt: now,
+              status: { type: "idle" },
+              turns: [],
+            },
+            cwd: request.params.cwd,
+          },
+        });
+      }
+      if (request.method === "turn/start") {
+        return jsonResponse({ result: { turn: { id: "turn-sticky", status: "inProgress" } } });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+    const chipLabel = () => document.querySelector("#project-chip-label").textContent;
+
+    await waitFor(
+      () => document.querySelector("#project-chip-list [data-project-id='p-web']"),
+      "the chip menu was not populated",
+    );
+
+    document.querySelector("#project-chip").click();
+    document.querySelector("#project-chip-list [data-project-id='p-web']").click();
+    await waitFor(() => chipLabel() === "web", "the chip did not take the choice");
+
+    // Starting another conversation must not fall back to the sidebar filter.
+    document.querySelector("#new-chat").click();
+    await waitFor(
+      () => chipLabel() === "web",
+      "a new conversation reset the project instead of keeping the last choice",
+    );
+    assert.equal(
+      window.localStorage.getItem("codex-web-last-project"),
+      "p-web",
+      "the last chosen project was not persisted",
+    );
+
+    typePrompt(window, "سلام");
+    document.querySelector("#send-message").click();
+    await waitFor(
+      () => rpcRequests.some((request) => request.method === "thread/start"),
+      "the conversation was not started",
+    );
+    assert.equal(
+      rpcRequests.find((request) => request.method === "thread/start").params.cwd,
+      "/workspace/web",
+      "the remembered project did not drive the working folder",
+    );
+
+    // Choosing "no project" is a choice too, and must also stick.
+    document.querySelector("#new-chat").click();
+    document.querySelector("#project-chip").click();
+    document.querySelector("#project-chip-list [data-project-id='']").click();
+    await waitFor(
+      () => window.localStorage.getItem("codex-web-last-project") === "",
+      "clearing the project was not remembered",
+    );
+    document.querySelector("#new-chat").click();
+    await waitFor(
+      () => chipLabel() !== "web",
+      "a new conversation revived a project the user had cleared",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
+
+test(
+  "a new conversation keeps the saved model and reasoning effort",
+  { concurrency: false },
+  async (t) => {
+    const rpcRequests = [];
+    const now = Math.floor(Date.now() / 1000);
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({ projects: [], threadProjects: {} });
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      rpcRequests.push(request);
+      if (request.method === "model/list") {
+        return jsonResponse({
+          result: {
+            data: [
+              { id: "gpt-5", model: "gpt-5", displayName: "GPT-5" },
+              { id: "gpt-6", model: "gpt-6", displayName: "GPT-6" },
+            ],
+          },
+        });
+      }
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: [], nextCursor: null } });
+      }
+      if (request.method === "thread/start") {
+        return jsonResponse({
+          result: {
+            thread: {
+              id: "kept-thread",
+              cwd: request.params.cwd,
+              createdAt: now,
+              updatedAt: now,
+              status: { type: "idle" },
+              turns: [],
+            },
+            cwd: request.params.cwd,
+          },
+        });
+      }
+      if (request.method === "turn/start") {
+        return jsonResponse({ result: { turn: { id: "turn-kept", status: "inProgress" } } });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, {
+      fetchHandler,
+      savedSettings: {
+        cwd: "/workspace",
+        effort: "high",
+        modelByProvider: { codex: "gpt-6", claude: "" },
+        provider: "codex",
+        version: 6,
+      },
+    });
+    const document = window.document;
+
+    await waitFor(
+      () => document.querySelector("#model-label").textContent === "GPT-6 · High",
+      "the saved model and effort were not restored",
+    );
+
+    document.querySelector("#new-chat").click();
+    await waitFor(
+      () => document.querySelector("#model-label").textContent === "GPT-6 · High",
+      "a new conversation reset the model or effort",
+    );
+
+    typePrompt(window, "سلام");
+    document.querySelector("#send-message").click();
+    await waitFor(
+      () => rpcRequests.some((request) => request.method === "thread/start"),
+      "the conversation was not started",
+    );
+    assert.equal(
+      rpcRequests.find((request) => request.method === "thread/start").params.model,
+      "gpt-6",
+      "the saved model was not used for the new conversation",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
