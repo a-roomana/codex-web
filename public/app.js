@@ -188,12 +188,6 @@ const KNOWN_CODEX_COMMAND_NAMES = new Set([
 
 const elements = {
   addImages: $("#add-images"),
-  assignProjectCancel: $("#assign-project-cancel"),
-  assignProjectClose: $("#assign-project-close"),
-  assignProjectDialog: $("#assign-project-dialog"),
-  assignProjectForm: $("#assign-project-form"),
-  assignProjectOptions: $("#assign-project-options"),
-  assignProjectSave: $("#assign-project-save"),
   approvalAccept: $("#approval-accept"),
   approvalCancel: $("#approval-cancel"),
   approvalContext: $("#approval-context"),
@@ -213,15 +207,11 @@ const elements = {
   composerToolsMenu: $("#composer-tools-menu"),
   composerToolsNote: $("#composer-tools-note"),
   conversation: $("#conversation"),
-  cwdChip: $("#cwd-chip"),
   cwdInput: $("#cwd-input"),
-  cwdLabel: $("#cwd-label"),
   dictate: $("#dictate"),
   effortSelect: $("#effort-select"),
   fullAccessWarning: $("#full-access-warning"),
   headerSettings: $("#header-settings"),
-  headerProject: $("#header-project"),
-  headerProjectLabel: $("#header-project-label"),
   imageInput: $("#image-input"),
   goalClear: $("#goal-clear"),
   goalDialog: $("#goal-dialog"),
@@ -270,6 +260,14 @@ const elements = {
   projectForm: $("#project-form"),
   projectId: $("#project-id"),
   projectInstructions: $("#project-instructions"),
+  projectChip: $("#project-chip"),
+  projectChipAdd: $("#project-chip-add"),
+  projectChipEmpty: $("#project-chip-empty"),
+  projectChipFilter: $("#project-chip-filter"),
+  projectChipHint: $("#project-chip-hint"),
+  projectChipLabel: $("#project-chip-label"),
+  projectChipList: $("#project-chip-list"),
+  projectChipMenu: $("#project-chip-menu"),
   projectList: $("#project-list"),
   projectName: $("#project-name"),
   projectSave: $("#project-save"),
@@ -328,6 +326,8 @@ const elements = {
   usageRefresh: $("#usage-refresh"),
   userMessageNavigationStatus: $("#user-message-navigation-status"),
   welcome: $("#welcome"),
+  welcomeProject: $("#welcome-project"),
+  welcomeProjectLabel: $("#welcome-project-label"),
   welcomeDescription: $("#welcome-description"),
   welcomeTitle: $("#welcome-title"),
 };
@@ -2178,9 +2178,7 @@ function updateSettingsUi() {
   state.models = state.modelsByProvider[provider] || [];
   const selectedModel = state.settings.modelByProvider[provider] || "";
   elements.cwdInput.value = state.settings.cwd;
-  const cwd = composerCwd();
-  elements.cwdLabel.textContent = shortPath(cwd, 38);
-  elements.cwdLabel.title = cwd;
+  updateProjectChip();
   void refreshAgentCommands();
   elements.providerSelect.value = provider;
   renderModelOptions(state.models, selectedModel, provider);
@@ -2380,18 +2378,58 @@ function persistActiveProject() {
   }
 }
 
-function updateProjectHeader() {
+function updateShareAvailability() {
+  elements.shareChat.disabled = !state.currentThreadId;
+}
+
+// The chip names the project this conversation runs in. When the project was
+// only inferred from the folder it says so, because project instructions are
+// not applied until the assignment is made explicit.
+function updateProjectChip() {
   const assigned = currentProject();
   const thread = state.currentThreadId ? threadById(state.currentThreadId) : null;
-  const project = assigned || projectById(resolveThreadProject(thread));
-  elements.headerProjectLabel.textContent = project?.name || "پروژه";
-  elements.headerProject.classList.toggle("assigned", Boolean(assigned));
-  elements.headerProject.title = assigned
-    ? `پروژه: ${assigned.name}`
-    : project
-      ? `بر اساس پوشه در «${project.name}» دسته‌بندی شده — برای انتساب کلیک کنید`
-      : "افزودن گفتگو به پروژه";
-  elements.shareChat.disabled = !state.currentThreadId;
+  const inferred = assigned ? null : projectById(resolveThreadProject(thread));
+  const project = assigned || inferred;
+  const cwd = composerCwd();
+
+  elements.projectChipLabel.textContent = project ? project.name : shortPath(cwd, 38);
+  elements.projectChipHint.classList.toggle("hidden", !inferred);
+  elements.projectChip.classList.toggle("inferred", Boolean(inferred));
+  elements.projectChip.classList.toggle("assigned", Boolean(assigned));
+  elements.projectChip.title = project
+    ? `${project.name} — ${project.cwd}`
+    : cwd;
+
+  elements.welcomeProjectLabel.textContent = project ? project.name : "انتخاب پروژه";
+  elements.welcomeProject.classList.toggle("assigned", Boolean(project));
+  updateShareAvailability();
+}
+
+// One popover component, two jobs: filtering the sidebar list, and setting the
+// project a conversation runs in.
+const projectMenus = [
+  {
+    mode: "filter",
+    trigger: elements.projectSwitcher,
+    menu: elements.projectSwitcherMenu,
+    filter: elements.projectSwitcherFilter,
+    list: elements.projectList,
+    empty: elements.projectSwitcherEmpty,
+    showCwd: false,
+  },
+  {
+    mode: "assign",
+    trigger: elements.projectChip,
+    menu: elements.projectChipMenu,
+    filter: elements.projectChipFilter,
+    list: elements.projectChipList,
+    empty: elements.projectChipEmpty,
+    showCwd: true,
+  },
+];
+
+function selectedProjectIdFor(mode) {
+  return (mode === "assign" ? projectIdFor() : state.activeProjectId) || "";
 }
 
 function projectHasActivity(projectId) {
@@ -2402,14 +2440,10 @@ function projectHasActivity(projectId) {
   });
 }
 
-function renderProjects() {
-  elements.projectList.replaceChildren();
-  const filter = elements.projectSwitcherFilter.value.trim().toLowerCase();
-  const counts = new Map();
-  for (const thread of state.threads) {
-    const projectId = resolveThreadProject(thread);
-    if (projectId) counts.set(projectId, (counts.get(projectId) || 0) + 1);
-  }
+function renderProjectMenu(descriptor, counts) {
+  descriptor.list.replaceChildren();
+  const filter = descriptor.filter.value.trim().toLowerCase();
+  const selectedId = selectedProjectIdFor(descriptor.mode);
 
   const makeRow = (project) => {
     const row = document.createElement("div");
@@ -2417,7 +2451,7 @@ function renderProjects() {
     const button = document.createElement("button");
     button.type = "button";
     button.setAttribute("role", "option");
-    const selected = project.id === (state.activeProjectId || "");
+    const selected = project.id === selectedId;
     button.setAttribute("aria-selected", String(selected));
     button.className = `project-item ${selected ? "active" : ""}`;
     button.dataset.projectId = project.id;
@@ -2427,17 +2461,28 @@ function renderProjects() {
     check.textContent = selected ? "✓" : "";
     check.setAttribute("aria-hidden", "true");
 
+    const copy = document.createElement("span");
+    copy.className = "project-item-copy";
     const name = document.createElement("span");
     name.className = "project-item-name";
     name.dir = "auto";
     name.textContent = project.name;
+    copy.append(name);
+    // Choosing where a conversation runs needs the folder; filtering does not.
+    if (descriptor.showCwd) {
+      const cwd = document.createElement("small");
+      cwd.className = "project-item-cwd";
+      cwd.dir = "ltr";
+      cwd.textContent = project.cwd || "پوشهٔ پیش‌فرض تنظیمات";
+      copy.append(cwd);
+    }
     if (project.cwd) button.title = project.cwd;
 
     const count = document.createElement("span");
     count.className = "project-item-count";
     count.textContent = project.count.toLocaleString("fa-IR");
 
-    button.append(check, name);
+    button.append(check, copy);
     if (project.id && projectHasActivity(project.id)) {
       const dot = document.createElement("span");
       dot.className = "project-item-activity";
@@ -2462,7 +2507,12 @@ function renderProjects() {
   };
 
   const rows = [
-    { id: "", name: "همهٔ گفتگوها", cwd: "", count: state.threads.length },
+    {
+      id: "",
+      name: descriptor.mode === "assign" ? "بدون پروژه" : "همهٔ گفتگوها",
+      cwd: descriptor.mode === "assign" ? state.settings.cwd : "",
+      count: state.threads.length,
+    },
     ...state.projects.map((project) => ({
       ...project,
       count: counts.get(project.id) || 0,
@@ -2474,8 +2524,17 @@ function renderProjects() {
       `${project.name} ${project.cwd || ""}`.toLowerCase().includes(filter),
   );
 
-  for (const project of rows) elements.projectList.append(makeRow(project));
-  elements.projectSwitcherEmpty.classList.toggle("hidden", rows.length > 0);
+  for (const project of rows) descriptor.list.append(makeRow(project));
+  descriptor.empty.classList.toggle("hidden", rows.length > 0);
+}
+
+function renderProjects() {
+  const counts = new Map();
+  for (const thread of state.threads) {
+    const projectId = resolveThreadProject(thread);
+    if (projectId) counts.set(projectId, (counts.get(projectId) || 0) + 1);
+  }
+  for (const descriptor of projectMenus) renderProjectMenu(descriptor, counts);
 
   const active = projectById(state.activeProjectId);
   elements.projectSwitcherName.textContent = active ? active.name : "همهٔ گفتگوها";
@@ -2483,31 +2542,39 @@ function renderProjects() {
     active ? counts.get(active.id) || 0 : state.threads.length
   ).toLocaleString("fa-IR");
   elements.projectSwitcher.title = active?.cwd || "فیلتر بر اساس پروژه";
-  updateProjectHeader();
+  updateProjectChip();
 }
 
-function openProjectSwitcher() {
-  elements.projectSwitcherMenu.classList.remove("hidden");
-  elements.projectSwitcher.setAttribute("aria-expanded", "true");
-  renderProjects();
-  setTimeout(() => elements.projectSwitcherFilter.focus(), 0);
+function menuIsOpen(descriptor) {
+  return !descriptor.menu.classList.contains("hidden");
 }
 
-function closeProjectSwitcher({ focusTrigger = false } = {}) {
-  if (elements.projectSwitcherMenu.classList.contains("hidden")) return;
-  elements.projectSwitcherMenu.classList.add("hidden");
-  elements.projectSwitcher.setAttribute("aria-expanded", "false");
-  elements.projectSwitcherFilter.value = "";
-  renderProjects();
-  if (focusTrigger) elements.projectSwitcher.focus();
-}
-
-function toggleProjectSwitcher() {
-  if (elements.projectSwitcherMenu.classList.contains("hidden")) {
-    openProjectSwitcher();
-  } else {
-    closeProjectSwitcher({ focusTrigger: true });
+function openProjectMenu(descriptor) {
+  for (const other of projectMenus) {
+    if (other !== descriptor) closeProjectMenu(other);
   }
+  descriptor.menu.classList.remove("hidden");
+  descriptor.trigger.setAttribute("aria-expanded", "true");
+  renderProjects();
+  setTimeout(() => descriptor.filter.focus(), 0);
+}
+
+function closeProjectMenu(descriptor, { focusTrigger = false } = {}) {
+  if (!menuIsOpen(descriptor)) return;
+  descriptor.menu.classList.add("hidden");
+  descriptor.trigger.setAttribute("aria-expanded", "false");
+  descriptor.filter.value = "";
+  renderProjects();
+  if (focusTrigger) descriptor.trigger.focus();
+}
+
+function closeProjectMenus() {
+  for (const descriptor of projectMenus) closeProjectMenu(descriptor);
+}
+
+function toggleProjectMenu(descriptor) {
+  if (menuIsOpen(descriptor)) closeProjectMenu(descriptor, { focusTrigger: true });
+  else openProjectMenu(descriptor);
 }
 
 async function loadProjects() {
@@ -2567,7 +2634,7 @@ async function saveProject(event) {
       selectProject(result.project.id);
       newChat({ projectId: result.project.id });
     } else {
-      updateProjectHeader();
+      updateProjectChip();
     }
   } catch (error) {
     showError(error, projectId ? "ویرایش پروژه" : "ساخت پروژه");
@@ -2591,7 +2658,7 @@ async function deleteProject() {
       persistActiveProject();
     }
     await loadProjects();
-    updateProjectHeader();
+    updateProjectChip();
   } catch (error) {
     showError(error, "حذف پروژه");
   } finally {
@@ -2604,70 +2671,34 @@ function selectProject(projectId) {
   state.activeProjectId = nextProjectId;
   state.threadListLimit = THREAD_LIST_PAGE_SIZE;
   persistActiveProject();
-  closeProjectSwitcher();
+  closeProjectMenus();
   renderProjects();
   renderThreadList();
 }
 
-function renderAssignProjectOptions() {
-  elements.assignProjectOptions.replaceChildren();
-  const assignedId = projectIdFor();
-  const options = [
-    { id: "", name: "بدون پروژه", cwd: "در فهرست عمومی گفتگوها" },
-    ...state.projects,
-  ];
-  for (const project of options) {
-    const label = document.createElement("label");
-    label.className = "assign-project-option";
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "assigned-project";
-    input.value = project.id;
-    input.checked = project.id === (assignedId || "");
-    const copy = document.createElement("span");
-    const name = document.createElement("strong");
-    name.textContent = project.name;
-    const cwd = document.createElement("small");
-    cwd.textContent = project.cwd;
-    copy.append(name, cwd);
-    label.append(input, copy);
-    elements.assignProjectOptions.append(label);
-  }
-}
-
-function openAssignProjectDialog() {
-  renderAssignProjectOptions();
-  elements.assignProjectDialog.showModal();
-}
-
-async function saveProjectAssignment(event) {
-  event.preventDefault();
-  const selected = elements.assignProjectOptions.querySelector(
-    'input[name="assigned-project"]:checked',
-  );
-  const projectId = selected?.value || null;
-  elements.assignProjectSave.disabled = true;
+async function assignChatProject(projectId) {
+  const nextId = projectId && projectById(projectId) ? projectId : null;
   try {
     if (state.currentThreadId) {
       await api("/api/project-threads", {
         method: "POST",
-        body: JSON.stringify({ threadId: state.currentThreadId, projectId }),
+        body: JSON.stringify({ threadId: state.currentThreadId, projectId: nextId }),
       });
-      if (projectId) state.threadProjects.set(state.currentThreadId, projectId);
+      if (nextId) state.threadProjects.set(state.currentThreadId, nextId);
       else state.threadProjects.delete(state.currentThreadId);
     } else {
       const key = draftKey();
-      if (projectId) state.draftProjects.set(key, projectId);
+      if (nextId) state.draftProjects.set(key, nextId);
       else state.draftProjects.delete(key);
     }
-    elements.assignProjectDialog.close();
     renderProjects();
     renderThreadList();
-    updateProjectHeader();
+    // The chip label and the welcome copy both derive from the project, and
+    // each is only refreshed by one of these.
+    updateSettingsUi();
+    updateConnection();
   } catch (error) {
     showError(error, "تغییر پروژهٔ گفتگو");
-  } finally {
-    elements.assignProjectSave.disabled = false;
   }
 }
 
@@ -3844,7 +3875,7 @@ function newChat({
   restoreDraft(null);
   renderThreadList();
   updateAttentionUi();
-  updateProjectHeader();
+  updateProjectChip();
   updateSettingsUi();
   updateConnection();
   closeSidebar();
@@ -3884,7 +3915,7 @@ function setCurrentThread(thread, metadata = {}) {
   restoreDraft(thread.id);
   renderThreadList();
   activateThreadInteractions(thread.id);
-  updateProjectHeader();
+  updateProjectChip();
   updateSettingsUi();
   updateConnection();
   void loadGoal(thread.id);
@@ -6295,31 +6326,42 @@ elements.promptQueueClear.addEventListener("click", clearPromptQueue);
 elements.stopTurn.addEventListener("click", stopTurn);
 elements.newChat.addEventListener("click", () => newChat());
 elements.projectAdd.addEventListener("click", () => {
-  closeProjectSwitcher();
+  closeProjectMenus();
   openProjectDialog();
 });
-elements.projectSwitcher.addEventListener("click", toggleProjectSwitcher);
-elements.projectSwitcherFilter.addEventListener("input", renderProjects);
-elements.projectSwitcherFilter.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
+elements.projectChipAdd.addEventListener("click", () => {
+  closeProjectMenus();
+  openProjectDialog();
+});
+elements.welcomeProject.addEventListener("click", () =>
+  toggleProjectMenu(projectMenus[1]),
+);
+for (const descriptor of projectMenus) {
+  descriptor.trigger.addEventListener("click", () => toggleProjectMenu(descriptor));
+  descriptor.filter.addEventListener("input", renderProjects);
+  descriptor.filter.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
     event.preventDefault();
-    closeProjectSwitcher({ focusTrigger: true });
-  }
-});
+    closeProjectMenu(descriptor, { focusTrigger: true });
+  });
+  descriptor.list.addEventListener("click", (event) => {
+    const edit = event.target.closest("[data-project-edit]");
+    if (edit) {
+      closeProjectMenu(descriptor);
+      openProjectDialog(projectById(edit.dataset.projectEdit));
+      return;
+    }
+    const project = event.target.closest("[data-project-id]");
+    if (!project) return;
+    const projectId = project.dataset.projectId || null;
+    closeProjectMenu(descriptor);
+    if (descriptor.mode === "assign") assignChatProject(projectId);
+    else selectProject(projectId);
+  });
+}
 document.addEventListener("click", (event) => {
-  if (elements.projectSwitcherMenu.classList.contains("hidden")) return;
   if (event.target.closest(".project-switcher")) return;
-  closeProjectSwitcher();
-});
-elements.projectList.addEventListener("click", (event) => {
-  const edit = event.target.closest("[data-project-edit]");
-  if (edit) {
-    closeProjectSwitcher();
-    openProjectDialog(projectById(edit.dataset.projectEdit));
-    return;
-  }
-  const project = event.target.closest("[data-project-id]");
-  if (project) selectProject(project.dataset.projectId || null);
+  closeProjectMenus();
 });
 elements.threadList.addEventListener("click", (event) => {
   if (event.target.closest("#thread-load-more")) {
@@ -6344,24 +6386,15 @@ elements.usageDialog.addEventListener("close", () => {
   clearInterval(state.usageClockTimer);
   state.usageClockTimer = null;
 });
-elements.headerProject.addEventListener("click", openAssignProjectDialog);
 elements.shareChat.addEventListener("click", () => refreshShare());
 elements.projectForm.addEventListener("submit", saveProject);
 elements.projectCancel.addEventListener("click", () => elements.projectDialog.close());
 elements.projectDialogClose.addEventListener("click", () => elements.projectDialog.close());
 elements.projectDelete.addEventListener("click", deleteProject);
-elements.assignProjectForm.addEventListener("submit", saveProjectAssignment);
-elements.assignProjectCancel.addEventListener("click", () =>
-  elements.assignProjectDialog.close(),
-);
-elements.assignProjectClose.addEventListener("click", () =>
-  elements.assignProjectDialog.close(),
-);
 elements.shareDialogClose.addEventListener("click", () => elements.shareDialog.close());
 elements.shareCopy.addEventListener("click", copyShareLink);
 elements.shareRefresh.addEventListener("click", () => refreshShare({ open: false }));
 elements.shareRevoke.addEventListener("click", revokeShare);
-elements.cwdChip.addEventListener("click", () => openSettings());
 elements.saveSettings.addEventListener("click", (event) => {
   event.preventDefault();
   saveSettings();

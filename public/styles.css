@@ -931,11 +931,6 @@ body.sidebar-collapsed .menu-button {
   gap: 2px;
 }
 
-.header-project-button.assigned {
-  color: var(--accent-strong);
-  background: var(--accent-soft);
-}
-
 .usage-button {
   min-width: 74px;
   justify-content: center;
@@ -2613,8 +2608,93 @@ button.context-chip:hover {
   stroke-width: 1.65;
 }
 
-.context-chip.passive {
-  display: none;
+.project-chip-switcher {
+  position: relative;
+  min-width: 0;
+}
+
+.project-chip.assigned {
+  color: var(--accent-strong);
+}
+
+/* A folder-matched project is shown, but its instructions are not applied
+   until the assignment is made explicit — so it must not look settled. */
+.project-chip.inferred {
+  border: 1px dashed var(--line);
+}
+
+.project-chip-hint {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  font-size: 0.68rem;
+}
+
+.project-chip .project-switcher-caret {
+  flex: 0 0 auto;
+}
+
+/* The composer sits at the bottom, so its menu has to grow upwards. */
+.project-switcher-menu.upward {
+  top: auto;
+  bottom: calc(100% + 5px);
+  inset-inline: auto 0;
+  width: min(320px, calc(100vw - 40px));
+}
+
+.project-item-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+
+.project-item-cwd {
+  overflow: hidden;
+  color: var(--muted-2);
+  direction: ltr;
+  font-size: 0.68rem;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.welcome-project {
+  display: inline-flex;
+  margin-top: 4px;
+  padding: 7px 12px;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  font-size: 0.8125rem;
+}
+
+.welcome-project:hover {
+  color: var(--text);
+  background: var(--surface-raised);
+  border-color: var(--line);
+}
+
+.welcome-project.assigned {
+  color: var(--accent-strong);
+  border-color: var(--accent-border);
+}
+
+.welcome-project svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.65;
+}
+
+.context-chip.readonly {
+  color: var(--muted-2);
+  cursor: default;
 }
 
 .send-button,
@@ -3119,7 +3199,6 @@ dialog form,
 }
 
 .project-dialog,
-.assign-project-dialog,
 .share-dialog,
 .usage-dialog {
   width: min(540px, calc(100vw - 30px));
@@ -3356,63 +3435,6 @@ dialog form,
   margin: 0;
   padding: 12px;
   text-align: center;
-}
-
-.assign-project-options {
-  display: grid;
-  max-height: min(330px, 50vh);
-  gap: 7px;
-  overflow-y: auto;
-}
-
-.assign-project-option {
-  display: flex;
-  min-height: 48px;
-  padding: 8px 11px;
-  align-items: center;
-  gap: 10px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  cursor: pointer;
-}
-
-.assign-project-option:hover {
-  border-color: var(--accent-border);
-}
-
-.assign-project-option span {
-  display: grid;
-  min-width: 0;
-  gap: 1px;
-}
-
-.assign-project-option strong {
-  overflow: hidden;
-  font-size: 0.875rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.assign-project-option small {
-  overflow: hidden;
-  color: var(--muted-2);
-  direction: ltr;
-  font-size: 0.72rem;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.share-private-note {
-  margin: -4px 0 18px;
-  padding: 10px 12px;
-  color: var(--muted);
-  background: var(--panel-2);
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  font-size: 0.8125rem;
-  line-height: 1.7;
 }
 
 .share-dialog #share-link {
@@ -3945,9 +3967,6 @@ dialog form,
     gap: 8px;
   }
 
-  .context-chip.passive {
-    display: none;
-  }
 
   .context-chip {
     max-width: 128px;

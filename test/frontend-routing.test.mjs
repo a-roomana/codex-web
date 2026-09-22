@@ -798,7 +798,10 @@ test("composer uses a neon palette frame and neutral ChatGPT-like stop control",
   const placeholder =
     styles.match(/\.composer textarea:placeholder-shown\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
 
-  assert.match(index, /class="context-chip-icon" data-icon="settings"/);
+  // The composer chip picks the project now; settings stays in the topbar.
+  assert.match(index, /class="context-chip-icon" data-icon="project"/);
+  assert.match(index, /id="project-chip"[^>]*aria-haspopup="listbox"/);
+  assert.doesNotMatch(index, /data-icon="settings"/);
   assert.match(index, /id="stop-turn"[^>]*>[\s\S]*?<rect[^>]+rx="1\.5"/);
   assert.match(index, /id="composer-tools"[^>]*>[\s\S]*?<path d="M12 5v14M5 12h14"/);
   assert.match(index, /<strong>Goal mode<\/strong>/);
@@ -1621,7 +1624,9 @@ test(
       "new project was not selected",
     );
     assert.match(document.querySelector("#welcome-title").textContent, /وب‌اپ/);
-    assert.equal(document.querySelector("#cwd-label").title, "/workspace/web-app");
+    // The composer chip now names the project and keeps the folder in its title.
+    assert.equal(document.querySelector("#project-chip-label").textContent, "وب‌اپ");
+    assert.match(document.querySelector("#project-chip").title, /\/workspace\/web-app/);
 
     typePrompt(window, "پروژه را بررسی کن");
     document.querySelector("#send-message").click();
@@ -2139,6 +2144,184 @@ test(
     await waitFor(
       () => pinnedIds().includes("web-old"),
       "the conversation just read in another project disappeared",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
+
+test(
+  "the composer chip assigns a project to a draft and to an existing conversation",
+  { concurrency: false },
+  async (t) => {
+    const now = Math.floor(Date.now() / 1000);
+    const assignments = [];
+    const rpcRequests = [];
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({
+          projects: [
+            {
+              id: "p-api",
+              name: "api",
+              cwd: "/workspace/api",
+              instructions: "قبل از پایان تست‌ها را اجرا کن.",
+            },
+            { id: "p-web", name: "web", cwd: "/workspace/web", instructions: "" },
+          ],
+          threadProjects: {},
+        });
+      }
+      if (path === "/api/project-threads") {
+        assignments.push(JSON.parse(options.body));
+        return jsonResponse(assignments.at(-1));
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      rpcRequests.push(request);
+      if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: [], nextCursor: null } });
+      }
+      if (request.method === "thread/start") {
+        return jsonResponse({
+          result: {
+            thread: {
+              id: "chip-thread",
+              cwd: request.params.cwd,
+              createdAt: now,
+              updatedAt: now,
+              status: { type: "idle" },
+              turns: [],
+            },
+            cwd: request.params.cwd,
+          },
+        });
+      }
+      if (request.method === "turn/start") {
+        return jsonResponse({ result: { turn: { id: "turn-chip", status: "inProgress" } } });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+    const chipLabel = () => document.querySelector("#project-chip-label").textContent;
+
+    await waitFor(
+      () => document.querySelector("#project-chip-list [data-project-id='p-api']"),
+      "the chip menu was not populated",
+    );
+    // Rows in assign mode expose the folder, which filter mode does not need.
+    assert.equal(
+      document.querySelector("#project-chip-list [data-project-id='p-api'] .project-item-cwd")
+        .textContent,
+      "/workspace/api",
+    );
+
+    document.querySelector("#project-chip").click();
+    assert.equal(
+      document.querySelector("#project-chip-menu").classList.contains("hidden"),
+      false,
+      "clicking the chip did not open the menu",
+    );
+
+    document.querySelector("#project-chip-list [data-project-id='p-api']").click();
+    // The label must update immediately, not only after the thread exists.
+    await waitFor(() => chipLabel() === "api", "the chip label did not follow the assignment");
+    assert.equal(
+      document.querySelector("#project-chip-menu").classList.contains("hidden"),
+      true,
+      "picking a project should close the menu",
+    );
+    // Assigning a draft is local; nothing is persisted until the thread exists.
+    assert.deepEqual(assignments, []);
+
+    typePrompt(window, "بررسی کن");
+    document.querySelector("#send-message").click();
+    await waitFor(() => assignments.length === 1, "the new thread was not assigned");
+    const start = rpcRequests.find((request) => request.method === "thread/start");
+    assert.equal(start.params.cwd, "/workspace/api");
+    assert.match(start.params.developerInstructions, /قبل از پایان تست‌ها/);
+    assert.deepEqual(assignments[0], { threadId: "chip-thread", projectId: "p-api" });
+
+    // Re-assigning an existing conversation goes straight to the server.
+    document.querySelector("#project-chip").click();
+    document.querySelector("#project-chip-list [data-project-id='p-web']").click();
+    await waitFor(() => assignments.length === 2, "re-assignment was not persisted");
+    assert.deepEqual(assignments[1], { threadId: "chip-thread", projectId: "p-web" });
+    await waitFor(() => chipLabel() === "web", "the chip did not follow the re-assignment");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
+
+test(
+  "picking a project from the composer does not move the sidebar filter",
+  { concurrency: false },
+  async (t) => {
+    const now = Math.floor(Date.now() / 1000);
+    const threads = [
+      {
+        id: "web-1",
+        name: "بازطراحی هدر",
+        cwd: "/workspace/web",
+        provider: "codex",
+        createdAt: now,
+        updatedAt: now,
+        status: { type: "idle" },
+      },
+    ];
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({
+          projects: [
+            { id: "p-api", name: "api", cwd: "/workspace/api", instructions: "" },
+            { id: "p-web", name: "web", cwd: "/workspace/web", instructions: "" },
+          ],
+          threadProjects: {},
+        });
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: threads, nextCursor: null } });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+
+    await waitFor(
+      () => document.querySelector("#project-chip-list [data-project-id='p-api']"),
+      "the chip menu was not populated",
+    );
+    // Browsing is scoped to web; the next chat is going to run in api.
+    document.querySelector("#project-switcher").click();
+    document.querySelector("#project-list [data-project-id='p-web']").click();
+    await waitFor(
+      () => document.querySelector("#project-switcher-name").textContent.trim() === "web",
+      "the sidebar filter did not move",
+    );
+
+    document.querySelector("#project-chip").click();
+    document.querySelector("#project-chip-list [data-project-id='p-api']").click();
+    await waitFor(
+      () => document.querySelector("#project-chip-label").textContent === "api",
+      "the chip did not take the assignment",
+    );
+    assert.equal(
+      document.querySelector("#project-switcher-name").textContent.trim(),
+      "web",
+      "assigning a chat must not change what the sidebar is browsing",
     );
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
