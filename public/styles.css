@@ -2576,23 +2576,38 @@ button.context-chip:hover {
 .project-switcher-menu.upward {
   top: auto;
   bottom: calc(100% + 5px);
-  inset-inline: auto 0;
+  inset-inline: 0 auto;
   width: min(320px, calc(100vw - 40px));
 }
 
 .project-item-copy {
-  display: grid;
+  display: flex;
   min-width: 0;
   flex: 1;
-  gap: 1px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.project-menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line-soft);
+}
+
+.project-item.highlighted {
+  color: var(--text-soft);
+  background: var(--panel-2);
+  border-color: var(--accent-border);
 }
 
 .project-item-cwd {
   overflow: hidden;
+  flex: 0 1 auto;
   color: var(--muted-2);
   direction: ltr;
   font-size: 0.68rem;
-  text-align: left;
+  text-align: start;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

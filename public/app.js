@@ -2575,10 +2575,14 @@ function projectHasActivity(projectId) {
   });
 }
 
-function renderProjectMenu(descriptor, counts) {
+// How many recently used projects sit above the divider.
+const PROJECT_MENU_RECENT_COUNT = 3;
+
+function renderProjectMenu(descriptor, counts, lastUsed) {
   descriptor.list.replaceChildren();
   const filter = descriptor.filter.value.trim().toLowerCase();
   const selectedId = selectedProjectIdFor(descriptor.mode);
+  const assigning = descriptor.mode === "assign";
 
   const makeRow = (project) => {
     const row = document.createElement("div");
@@ -2603,19 +2607,16 @@ function renderProjectMenu(descriptor, counts) {
     name.dir = "auto";
     name.textContent = project.name;
     copy.append(name);
-    // Choosing where a conversation runs needs the folder; filtering does not.
-    if (descriptor.showCwd) {
+    // Picking where a conversation runs needs the folder; filtering does not.
+    // Every folder here shares a long prefix, so only the tail carries signal.
+    if (descriptor.showCwd && project.cwd) {
       const cwd = document.createElement("small");
       cwd.className = "project-item-cwd";
       cwd.dir = "ltr";
-      cwd.textContent = project.cwd || "پوشهٔ پیش‌فرض تنظیمات";
+      cwd.textContent = shortPath(project.cwd, 28);
       copy.append(cwd);
     }
     if (project.cwd) button.title = project.cwd;
-
-    const count = document.createElement("span");
-    count.className = "project-item-count";
-    count.textContent = project.count.toLocaleString("fa-IR");
 
     button.append(check, copy);
     if (project.id && projectHasActivity(project.id)) {
@@ -2625,7 +2626,14 @@ function renderProjectMenu(descriptor, counts) {
       dot.setAttribute("aria-label", "گفتگوی فعال");
       button.append(dot);
     }
-    button.append(count);
+    // The conversation count answers "what am I browsing", not "where should
+    // this run", so it only belongs in the sidebar filter.
+    if (!assigning) {
+      const count = document.createElement("span");
+      count.className = "project-item-count";
+      count.textContent = project.count.toLocaleString("fa-IR");
+      button.append(count);
+    }
     row.append(button);
 
     if (project.id) {
@@ -2641,35 +2649,55 @@ function renderProjectMenu(descriptor, counts) {
     return row;
   };
 
-  const rows = [
-    {
-      id: "",
-      name: descriptor.mode === "assign" ? "بدون پروژه" : "همهٔ گفتگوها",
-      cwd: descriptor.mode === "assign" ? state.settings.cwd : "",
-      count: state.threads.length,
-    },
-    ...state.projects.map((project) => ({
-      ...project,
-      count: counts.get(project.id) || 0,
-    })),
-  ].filter(
+  const fallbackRow = {
+    id: "",
+    name: assigning ? "بدون پروژه" : "همهٔ گفتگوها",
+    cwd: "",
+    count: state.threads.length,
+  };
+  // Most recently worked in first — with many projects that is almost always
+  // the one being reached for.
+  const projects = state.projects
+    .map((project) => ({ ...project, count: counts.get(project.id) || 0 }))
+    .sort((left, right) => (lastUsed.get(right.id) || 0) - (lastUsed.get(left.id) || 0));
+
+  const rows = (assigning ? [...projects, fallbackRow] : [fallbackRow, ...projects]).filter(
     (project) =>
       !filter ||
       !project.id ||
       `${project.name} ${project.cwd || ""}`.toLowerCase().includes(filter),
   );
 
-  for (const project of rows) descriptor.list.append(makeRow(project));
+  const dividerAfter =
+    !filter && assigning && rows.length > PROJECT_MENU_RECENT_COUNT + 1
+      ? PROJECT_MENU_RECENT_COUNT
+      : -1;
+  rows.forEach((project, index) => {
+    descriptor.list.append(makeRow(project));
+    if (index === dividerAfter - 1) {
+      const divider = document.createElement("div");
+      divider.className = "project-menu-divider";
+      divider.setAttribute("aria-hidden", "true");
+      descriptor.list.append(divider);
+    }
+  });
   descriptor.empty.classList.toggle("hidden", rows.length > 0);
+  highlightProjectRow(descriptor, 0);
 }
 
 function renderProjects() {
   const counts = new Map();
+  const lastUsed = new Map();
   for (const thread of state.threads) {
     const projectId = resolveThreadProject(thread);
-    if (projectId) counts.set(projectId, (counts.get(projectId) || 0) + 1);
+    if (!projectId) continue;
+    counts.set(projectId, (counts.get(projectId) || 0) + 1);
+    const at = thread.updatedAt || thread.createdAt || 0;
+    if (at > (lastUsed.get(projectId) || 0)) lastUsed.set(projectId, at);
   }
-  for (const descriptor of projectMenus) renderProjectMenu(descriptor, counts);
+  for (const descriptor of projectMenus) {
+    renderProjectMenu(descriptor, counts, lastUsed);
+  }
 
   const active = projectById(state.activeProjectId);
   elements.projectSwitcherName.textContent = active ? active.name : "همهٔ گفتگوها";
@@ -2688,6 +2716,39 @@ const runChipMenu = {
 
 function allChipMenus() {
   return [...projectMenus, runChipMenu];
+}
+
+function projectRowsIn(descriptor) {
+  return [...descriptor.list.querySelectorAll("[data-project-id]")];
+}
+
+function highlightProjectRow(descriptor, index) {
+  const rows = projectRowsIn(descriptor);
+  if (!rows.length) {
+    descriptor.activeIndex = 0;
+    return;
+  }
+  const next = Math.max(0, Math.min(index, rows.length - 1));
+  descriptor.activeIndex = next;
+  rows.forEach((row, position) => {
+    row.classList.toggle("highlighted", position === next);
+  });
+  rows[next].scrollIntoView?.({ block: "nearest" });
+}
+
+function moveProjectHighlight(descriptor, delta) {
+  const rows = projectRowsIn(descriptor);
+  if (!rows.length) return;
+  const current = descriptor.activeIndex || 0;
+  // Wrap, so holding one arrow key always reaches every row.
+  const next = (current + delta + rows.length) % rows.length;
+  highlightProjectRow(descriptor, next);
+}
+
+function activateHighlightedProject(descriptor) {
+  const rows = projectRowsIn(descriptor);
+  const row = rows[descriptor.activeIndex || 0];
+  if (row) row.click();
 }
 
 function menuIsOpen(descriptor) {
@@ -6478,9 +6539,21 @@ for (const descriptor of projectMenus) {
   descriptor.trigger.addEventListener("click", () => toggleProjectMenu(descriptor));
   descriptor.filter.addEventListener("input", renderProjects);
   descriptor.filter.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    closeProjectMenu(descriptor, { focusTrigger: true });
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeProjectMenu(descriptor, { focusTrigger: true });
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveProjectHighlight(descriptor, event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      activateHighlightedProject(descriptor);
+    }
   });
   descriptor.list.addEventListener("click", (event) => {
     const edit = event.target.closest("[data-project-edit]");

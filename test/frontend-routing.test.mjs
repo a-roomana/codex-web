@@ -2697,3 +2697,69 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );
+
+
+test(
+  "the project menu leads with recent projects and picks by keyboard",
+  { concurrency: false },
+  async (t) => {
+  const now = Math.floor(Date.now() / 1000);
+  const fetchHandler = async (path, options = {}) => {
+    if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+    if (path === "/api/projects") {
+      return jsonResponse({
+        projects: [
+          { id: "p-old", name: "کهنه", cwd: "/workspace/old", instructions: "" },
+          { id: "p-fresh", name: "تازه", cwd: "/workspace/fresh", instructions: "" },
+        ],
+        threadProjects: {},
+      });
+    }
+    if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+    const request = JSON.parse(options.body);
+    if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+    if (request.method === "collaborationMode/list") {
+      return jsonResponse({ result: { data: [] } });
+    }
+    if (request.method === "thread/list") {
+      return jsonResponse({
+        result: {
+          data: [
+            { id: "t-fresh", name: "ت", cwd: "/workspace/fresh", provider: "codex",
+              createdAt: now, updatedAt: now, status: { type: "idle" } },
+            { id: "t-old", name: "ک", cwd: "/workspace/old", provider: "codex",
+              createdAt: now - 900000, updatedAt: now - 900000, status: { type: "idle" } },
+          ],
+          nextCursor: null,
+        },
+      });
+    }
+    throw new Error(`Unexpected RPC method: ${request.method}`);
+  };
+  const { window } = await createHarness(t, { fetchHandler });
+  const document = window.document;
+  const order = () =>
+    [...document.querySelectorAll("#project-chip-list [data-project-id]")].map(
+      (row) => row.dataset.projectId,
+    );
+  await waitFor(() => order().length === 3, "menu not populated");
+  // Creation order is old-then-fresh; recency reverses it and "no project" trails.
+  assert.deepEqual(order(), ["p-fresh", "p-old", ""]);
+  const row = document.querySelector("#project-chip-list [data-project-id='p-fresh']");
+  assert.equal(row.querySelector(".project-item-cwd").textContent, "/workspace/fresh");
+  assert.equal(row.title, "/workspace/fresh", "the full folder stays in the tooltip");
+  document.querySelector("#project-chip").click();
+  const filter = document.querySelector("#project-chip-filter");
+  filter.value = "کهنه";
+  filter.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await waitFor(() => order().join() === "p-old,", "typing did not narrow");
+  const enter = new window.Event("keydown", { bubbles: true, cancelable: true });
+  Object.defineProperty(enter, "key", { value: "Enter" });
+  filter.dispatchEvent(enter);
+  await waitFor(
+      () => document.querySelector("#project-chip-label").textContent === "کهنه",
+      "Enter did not pick the highlighted project",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
