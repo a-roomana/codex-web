@@ -399,7 +399,7 @@ body.sidebar-collapsed .menu-button {
 
 .project-switcher-options {
   display: grid;
-  max-height: 264px;
+  max-height: min(420px, calc(100dvh - 220px));
   gap: 2px;
   overflow-y: auto;
   scrollbar-width: thin;
@@ -479,8 +479,10 @@ body.sidebar-collapsed .menu-button {
 
 .project-item-name {
   min-width: 0;
-  flex: 1;
+  flex: 0 1 auto;
   overflow: hidden;
+  font-weight: 620;
+  text-align: start;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
