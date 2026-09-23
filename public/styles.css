@@ -399,6 +399,7 @@ body.sidebar-collapsed .menu-button {
 
 .project-switcher-options {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   max-height: min(420px, calc(100dvh - 220px));
   gap: 2px;
   overflow-y: auto;
@@ -566,6 +567,7 @@ body.sidebar-collapsed .menu-button {
 
 .thread-pinned {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   margin-bottom: 9px;
   padding-bottom: 8px;
   gap: 1px;

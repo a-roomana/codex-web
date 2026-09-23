@@ -837,6 +837,24 @@ test("composer accepts files and exposes a clear drag-and-drop state", async () 
   assert.match(styles, /\.composer\.drop-active\s*\{[^}]*--accent-rgb/s);
 });
 
+test("grid lists constrain their track so long titles ellipsize", async () => {
+  const styles = await readFile(STYLES, "utf8");
+  // A grid item's automatic minimum size is its content, so without this the
+  // row grows past the sidebar and the list clips the title instead.
+  for (const selector of [".thread-pinned", ".project-switcher-options"]) {
+    const rule = styles.match(
+      new RegExp(`\\${selector}\\s*\\{(?<body>[^}]*)\\}`),
+    )?.groups?.body;
+    assert.ok(rule, `${selector} rule is missing`);
+    assert.match(rule, /display:\s*grid/);
+    assert.match(
+      rule,
+      /grid-template-columns:\s*minmax\(0, 1fr\)/,
+      `${selector} must allow its track to shrink`,
+    );
+  }
+});
+
 test("failed technical activity chips stay visually neutral", async () => {
   const styles = await readFile(STYLES, "utf8");
   const failedSummary =
