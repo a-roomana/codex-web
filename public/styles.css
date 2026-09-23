@@ -596,20 +596,17 @@ body.sidebar-collapsed .menu-button {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 38px;
+  min-height: 50px;
   margin-bottom: 2px;
   padding: 7px 11px;
   flex-direction: column;
   align-items: stretch;
   justify-content: center;
+  gap: 2px;
   text-align: start;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 10px;
-}
-
-.thread-item.with-meta {
-  min-height: 48px;
 }
 
 .thread-item:hover {
@@ -654,15 +651,10 @@ body.sidebar-collapsed .menu-button {
 
 .thread-provider {
   flex: 0 0 auto;
-  padding: 1px 6px;
-  color: var(--muted);
-  background: rgb(154 173 183 / 0.06);
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  color: var(--muted-2);
   direction: ltr;
   font-family: var(--mono);
-  font-size: 0.6875rem;
-  line-height: 1.4;
+  font-size: 0.66rem;
   unicode-bidi: isolate;
 }
 
@@ -734,11 +726,24 @@ body.sidebar-collapsed .menu-button {
 
 .thread-item-meta {
   display: flex;
+  min-width: 0;
+  align-items: baseline;
   justify-content: space-between;
-  margin-top: 1px;
   gap: 8px;
   color: var(--muted-2);
-  font-size: 0.75rem;
+  font-size: 0.72rem;
+}
+
+.thread-item-origin {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.thread-item-origin > * + *::before {
+  margin-inline-end: 6px;
+  content: "·";
 }
 
 .thread-item-project {

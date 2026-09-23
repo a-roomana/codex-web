@@ -2781,3 +2781,65 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );
+
+test(
+  "a conversation row gives the title its own line",
+  { concurrency: false },
+  async (t) => {
+    const now = Math.floor(Date.now() / 1000);
+    const longTitle = "بازطراحی نوار کناری و انتخاب پروژه از خود composer";
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({
+          projects: [{ id: "p-web", name: "web", cwd: "/workspace/web", instructions: "" }],
+          threadProjects: {},
+        });
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({
+          result: {
+            data: [
+              {
+                id: "t-long",
+                name: longTitle,
+                cwd: "/workspace/web",
+                provider: "claude",
+                createdAt: now,
+                updatedAt: now,
+                status: { type: "idle" },
+              },
+            ],
+            nextCursor: null,
+          },
+        });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+    await waitFor(
+      () => document.querySelector("[data-thread-id='t-long']"),
+      "the conversation was not listed",
+    );
+    const row = document.querySelector("[data-thread-id='t-long']");
+    const heading = row.querySelector(".thread-item-heading");
+    const meta = row.querySelector(".thread-item-meta");
+
+    // The title must not share its line with the provider or the timestamp;
+    // that is what squeezed it down to about ten characters.
+    assert.equal(heading.querySelector(".thread-item-title").textContent, longTitle);
+    assert.equal(heading.querySelector(".thread-provider"), null);
+    assert.equal(heading.querySelector(".thread-item-time"), null);
+    assert.equal(meta.querySelector(".thread-provider").textContent, "Claude");
+    assert.ok(meta.querySelector(".thread-item-time").textContent);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);

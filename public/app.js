@@ -3231,6 +3231,9 @@ function announceThreadCompletion(threadId, status) {
   }
 }
 
+// The row is two lines on purpose. Sharing one line, the title competed with a
+// provider badge, an activity pill and a timestamp and was left ~80px — about
+// ten Persian characters. Giving it a line of its own restores ~254px.
 function buildThreadItem(thread, { showProject = false } = {}) {
   const button = document.createElement("button");
   button.className = `thread-item ${thread.id === state.currentThreadId ? "active" : ""}`;
@@ -3241,16 +3244,11 @@ function buildThreadItem(thread, { showProject = false } = {}) {
   title.dir = "auto";
   title.textContent = threadDisplayTitle(thread);
 
-  const provider = document.createElement("span");
-  provider.className = "thread-provider";
-  provider.dir = "ltr";
-  provider.textContent = thread.provider === "claude" ? "Claude" : "Codex";
-  provider.title = thread.provider === "claude" ? "Claude Code CLI" : "Codex CLI";
-
   const heading = document.createElement("span");
   heading.className = "thread-item-heading";
-  heading.append(title, provider);
+  heading.append(title);
 
+  // Needing an answer is the one thing worth stealing title width for.
   const presentation = threadActivityPresentation(thread.id);
   if (presentation) {
     const activity = document.createElement("span");
@@ -3259,28 +3257,35 @@ function buildThreadItem(thread, { showProject = false } = {}) {
     activity.setAttribute("aria-label", presentation.label);
     heading.append(activity);
   }
-
-  const time = document.createElement("span");
-  time.className = "thread-item-time";
-  time.textContent = formatRelativeTime(thread.updatedAt || thread.createdAt);
-  heading.append(time);
   button.append(heading);
 
-  // Inside a single project the folder is identical on every row, so it is only
-  // worth the extra line when rows can come from anywhere.
+  const meta = document.createElement("span");
+  meta.className = "thread-item-meta";
+  const origin = document.createElement("span");
+  origin.className = "thread-item-origin";
+
   if (showProject) {
-    const meta = document.createElement("span");
-    meta.className = "thread-item-meta";
     const project = projectById(resolveThreadProject(thread));
     const label = document.createElement("span");
     label.className = "thread-item-project";
     label.dir = "auto";
     label.textContent = project ? project.name : shortPath(thread.cwd, 23);
     label.title = thread.cwd || "";
-    meta.append(label);
-    button.append(meta);
-    button.classList.add("with-meta");
+    origin.append(label);
   }
+
+  const provider = document.createElement("span");
+  provider.className = "thread-provider";
+  provider.dir = "ltr";
+  provider.textContent = thread.provider === "claude" ? "Claude" : "Codex";
+  provider.title = thread.provider === "claude" ? "Claude Code CLI" : "Codex CLI";
+  origin.append(provider);
+
+  const time = document.createElement("span");
+  time.className = "thread-item-time";
+  time.textContent = formatRelativeTime(thread.updatedAt || thread.createdAt);
+  meta.append(origin, time);
+  button.append(meta);
   return button;
 }
 
