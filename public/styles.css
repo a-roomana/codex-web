@@ -302,6 +302,9 @@ body.sidebar-collapsed .menu-button {
 
 .project-switcher {
   position: relative;
+}
+
+.sidebar > .project-switcher {
   margin: 1px 0 10px;
 }
 
@@ -2834,7 +2837,9 @@ button.context-chip:hover {
 .composer-hint {
   min-width: 0;
   flex: 1;
+  align-self: flex-end;
   margin: 0;
+  padding-bottom: 6px;
   overflow: hidden;
   color: var(--muted-2);
   font-size: 0.7rem;
