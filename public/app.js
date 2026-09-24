@@ -2397,10 +2397,11 @@ function formatRelativeTime(seconds) {
   const minute = 60_000;
   const hour = 60 * minute;
   const day = 24 * hour;
+  const fa = (value) => value.toLocaleString("fa-IR");
   if (elapsed < minute) return "اکنون";
-  if (elapsed < hour) return `${Math.floor(elapsed / minute)} دقیقه`;
-  if (elapsed < day) return `${Math.floor(elapsed / hour)} ساعت`;
-  if (elapsed < 7 * day) return `${Math.floor(elapsed / day)} روز`;
+  if (elapsed < hour) return `${fa(Math.floor(elapsed / minute))} دقیقه`;
+  if (elapsed < day) return `${fa(Math.floor(elapsed / hour))} ساعت`;
+  if (elapsed < 7 * day) return `${fa(Math.floor(elapsed / day))} روز`;
   return new Intl.DateTimeFormat("fa-IR", { month: "short", day: "numeric" }).format(
     seconds * 1000,
   );
@@ -3332,6 +3333,11 @@ function buildThreadItem(thread, { showProject = false } = {}) {
     label.textContent = project ? project.name : shortPath(thread.cwd, 23);
     label.title = thread.cwd || "";
     origin.append(label);
+    const separator = document.createElement("span");
+    separator.className = "thread-item-separator";
+    separator.setAttribute("aria-hidden", "true");
+    separator.textContent = "·";
+    origin.append(separator);
   }
 
   const provider = document.createElement("span");

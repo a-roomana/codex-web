@@ -741,9 +741,9 @@ body.sidebar-collapsed .menu-button {
   gap: 6px;
 }
 
-.thread-item-origin > * + *::before {
-  margin-inline-end: 6px;
-  content: "·";
+.thread-item-separator {
+  flex: 0 0 auto;
+  color: var(--muted-2);
 }
 
 .thread-item-project {

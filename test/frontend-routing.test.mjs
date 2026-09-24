@@ -2811,8 +2811,8 @@ test(
                 name: longTitle,
                 cwd: "/workspace/web",
                 provider: "claude",
-                createdAt: now,
-                updatedAt: now,
+                createdAt: now - 7 * 3600,
+                updatedAt: now - 7 * 3600,
                 status: { type: "idle" },
               },
             ],
@@ -2839,7 +2839,20 @@ test(
     assert.equal(heading.querySelector(".thread-provider"), null);
     assert.equal(heading.querySelector(".thread-item-time"), null);
     assert.equal(meta.querySelector(".thread-provider").textContent, "Claude");
-    assert.ok(meta.querySelector(".thread-item-time").textContent);
+
+    // Relative times follow the locale like every other number in the UI.
+    assert.equal(meta.querySelector(".thread-item-time").textContent, "۷ ساعت");
+
+    // The separator must be its own node: as a pseudo-element on the provider
+    // it was absorbed by that element's isolated LTR run and came out misplaced.
+    const origin = [...meta.querySelector(".thread-item-origin").children].map(
+      (node) => node.className,
+    );
+    assert.deepEqual(origin, [
+      "thread-item-project",
+      "thread-item-separator",
+      "thread-provider",
+    ]);
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );
