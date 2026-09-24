@@ -2843,3 +2843,87 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );
+
+test(
+  "messages carry the turn's clock time and the answer's duration",
+  { concurrency: false },
+  async (t) => {
+    // 20:00:04 -> 20:03:21 local, matching the shape both providers return.
+    const startedAt = Math.floor(Date.UTC(2026, 8, 23, 12, 0, 0) / 1000);
+    const completedAt = startedAt + 197;
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({ projects: [], threadProjects: {} });
+      }
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({ result: { data: [], nextCursor: null } });
+      }
+      if (request.method === "thread/resume") {
+        return jsonResponse({
+          result: {
+            thread: {
+              id: "timed-thread",
+              name: "زمان‌دار",
+              cwd: "/workspace",
+              provider: "codex",
+              createdAt: startedAt,
+              updatedAt: completedAt,
+              status: { type: "idle" },
+              turns: [
+                {
+                  id: "turn-1",
+                  status: "completed",
+                  startedAt,
+                  completedAt,
+                  durationMs: 197_000,
+                  items: [
+                    { id: "i-user", type: "userMessage", content: [{ type: "text", text: "سلام" }] },
+                    {
+                      id: "i-agent",
+                      type: "agentMessage",
+                      phase: "final_answer",
+                      content: [{ type: "text", text: "پاسخ" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, {
+      fetchHandler,
+      initialUrl: "http://localhost/?session=timed-thread",
+    });
+    const document = window.document;
+    await waitFor(
+      () => document.querySelector("[data-item-id='i-agent']"),
+      "the conversation was not hydrated",
+    );
+
+    const userTime = document
+      .querySelector("[data-item-id='i-user'] .message-time")
+      .textContent.trim();
+    const agentTime = document
+      .querySelector("[data-item-id='i-agent'] .message-time")
+      .textContent.trim();
+
+    // The user message is stamped with when the exchange began...
+    assert.ok(userTime, "the user message has no clock time");
+    // Persian digits, so match the locale's numerals rather than ASCII.
+    assert.match(userTime, /^[۰-۹]{1,2}:[۰-۹]{2}$/, `expected a clock time, got ${userTime}`);
+    // ...and the answer reports how long it took, not a second clock reading.
+    assert.equal(agentTime, "۳ دقیقه", `expected a duration, got ${agentTime}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);

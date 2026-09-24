@@ -1047,6 +1047,18 @@ body.sidebar-collapsed .menu-button {
   font-weight: 600;
 }
 
+.message-time {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted-2);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.message-time:empty {
+  display: none;
+}
+
 .message-body {
   min-width: 0;
   max-width: 100%;

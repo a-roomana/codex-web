@@ -449,6 +449,7 @@ const state = {
   threadActivity: new Map(),
   threadEventBacklog: new Map(),
   threadRuntime: new Map(),
+  turnTimings: new Map(),
   lastOpenedAt: loadLastOpened(),
   threadListHasMore: false,
   threadListLimit: THREAD_LIST_PAGE_SIZE,
@@ -2405,6 +2406,65 @@ function formatRelativeTime(seconds) {
   );
 }
 
+// Neither provider timestamps individual messages — Codex does not record it at
+// all, and Claude keeps it only in its own transcript. Both do report when a
+// turn started and finished, in seconds, so time is shown at turn boundaries.
+function formatClockTime(seconds) {
+  if (!seconds) return "";
+  return new Intl.DateTimeFormat("fa-IR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(seconds * 1000);
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 1) return "";
+  const fa = (value) => value.toLocaleString("fa-IR");
+  if (seconds < 60) return `${fa(Math.round(seconds))} ثانیه`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${fa(minutes)} دقیقه`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${fa(hours)} ساعت و ${fa(rest)} دقیقه` : `${fa(hours)} ساعت`;
+}
+
+function turnDurationSeconds(timing) {
+  if (!timing) return null;
+  if (Number.isFinite(timing.durationMs)) return timing.durationMs / 1000;
+  if (timing.startedAt && timing.completedAt) {
+    return timing.completedAt - timing.startedAt;
+  }
+  return null;
+}
+
+function applyTurnTiming(turnId) {
+  const timing = state.turnTimings.get(turnId);
+  if (!timing) return;
+  const clock = formatClockTime(timing.startedAt);
+  const duration = formatDuration(turnDurationSeconds(timing));
+  for (const row of elements.messages.querySelectorAll(".message-row")) {
+    if (row.dataset.turnId !== turnId) continue;
+    const slot = row.querySelector(".message-time");
+    if (!slot) continue;
+    const assistant = row.classList.contains("assistant");
+    // The clock marks when the exchange began; the duration is only meaningful
+    // once the answer has landed.
+    const text = assistant ? duration : clock;
+    slot.textContent = text;
+    if (timing.startedAt) {
+      slot.dateTime = new Date(timing.startedAt * 1000).toISOString();
+    }
+    slot.title = assistant && clock ? `شروع ${clock}` : "";
+  }
+}
+
+function recordTurnTiming(turnId, patch) {
+  if (!turnId) return;
+  const current = state.turnTimings.get(turnId) || {};
+  state.turnTimings.set(turnId, { ...current, ...patch });
+  applyTurnTiming(turnId);
+}
+
 function threadDisplayTitle(thread) {
   const name = thread.name?.trim();
   if (name) return name;
@@ -3404,6 +3464,7 @@ async function loadMoreThreads() {
 }
 
 function clearConversation() {
+  state.turnTimings.clear();
   closeSlashCommandMenu();
   resetScrollFollowing();
   if (state.userMessageNavigationFrame !== null) {
@@ -4262,6 +4323,9 @@ function createMessageView(item, turnId = null, { continuation = false } = {}) {
     body.append(label);
   }
   body.append(content);
+  const time = document.createElement("time");
+  time.className = "message-time";
+  body.append(time);
   if (role === "assistant") body.append(createAssistantMessageActions());
   row.append(body);
   elements.messages.append(row);
@@ -4717,6 +4781,11 @@ function renderHistory(thread) {
         continuation: continuation && item.type === "agentMessage" && !isCommentaryItem(item),
       });
     }
+    recordTurnTiming(turn.id, {
+      startedAt: turn.startedAt,
+      completedAt: turn.completedAt,
+      durationMs: turn.durationMs,
+    });
     const processView = state.turnProcessViews.get(turn.id);
     if (processView) {
       setTurnProcessState(processView, turn.status === "inProgress", {
@@ -5567,6 +5636,9 @@ function handleNotification(message) {
 
   if (method === "turn/started" && threadId) {
     const turnId = params.turn?.id || null;
+    if (threadId === state.currentThreadId) {
+      recordTurnTiming(turnId, { startedAt: nowInSeconds() });
+    }
     state.compactPendingThreads.delete(threadId);
     updateThreadActivity(threadId, {
       phase: hasPendingInteractionForThread(threadId) ? "needs-input" : "running",
@@ -5586,6 +5658,9 @@ function handleNotification(message) {
     const turn = params.turn || {};
     const turnId = turn.id || "unknown";
     const key = turnEventKey(threadId, turnId);
+    if (threadId === state.currentThreadId) {
+      recordTurnTiming(turnId, { completedAt: nowInSeconds() });
+    }
     state.compactPendingThreads.delete(threadId);
     state.completedTurns.add(key);
 
