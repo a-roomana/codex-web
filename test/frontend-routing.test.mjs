@@ -2940,3 +2940,36 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 25));
   },
 );
+
+test("the conversation reserves space for the composer's real height", async () => {
+  const [index, styles] = await Promise.all([
+    readFile(INDEX, "utf8"),
+    readFile(STYLES, "utf8"),
+  ]);
+
+  // The composer floats over the conversation, so a fixed reserve leaves the
+  // last messages buried once the textarea grows.
+  const messages = styles.match(/\.messages\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
+  assert.match(
+    messages,
+    /padding:[^;]*var\(--composer-height/,
+    "the messages reserve must follow --composer-height",
+  );
+  assert.match(
+    styles,
+    /\.composer-wrap\s*\{[^}]*position:\s*absolute/s,
+    "the reserve only matters while the composer overlays the conversation",
+  );
+
+  // The hint moved inside the box, between the chips and the actions.
+  const footer = index.match(
+    /<div class="composer-footer">(?<body>[\s\S]*?)<div class="composer-actions">/,
+  )?.groups?.body;
+  assert.ok(footer, "composer footer markup changed shape");
+  assert.match(footer, /id="composer-hint"/, "the hint should sit inside the composer");
+  assert.doesNotMatch(
+    index.slice(index.indexOf("</div>\n        </div>\n      </main>")),
+    /composer-hint/,
+    "the hint should no longer trail the composer",
+  );
+});

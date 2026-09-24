@@ -1015,7 +1015,7 @@ body.sidebar-collapsed .menu-button {
   width: min(48rem, calc(100% - 40px));
   max-width: calc(100% - 40px);
   margin: 0 auto;
-  padding: 38px 0 190px;
+  padding: 38px 0 calc(var(--composer-height, 190px) + 26px);
 }
 
 .message-row {
@@ -2832,10 +2832,15 @@ button.context-chip:hover {
 }
 
 .composer-hint {
-  margin: 4px auto 0;
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  overflow: hidden;
   color: var(--muted-2);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   pointer-events: none;
 }
 

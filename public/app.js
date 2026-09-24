@@ -186,6 +186,7 @@ const elements = {
   approvalSelect: $("#approval-select"),
   connectionLabel: $("#connection-label"),
   composerHint: $("#composer-hint"),
+  composerWrap: $(".composer-wrap"),
   composer: $(".composer"),
   composerDropOverlay: $("#composer-drop-overlay"),
   composerTools: $("#composer-tools"),
@@ -450,6 +451,7 @@ const state = {
   threadEventBacklog: new Map(),
   threadRuntime: new Map(),
   turnTimings: new Map(),
+  composerHeight: null,
   lastOpenedAt: loadLastOpened(),
   threadListHasMore: false,
   threadListLimit: THREAD_LIST_PAGE_SIZE,
@@ -6425,10 +6427,25 @@ async function refreshProviderStatus() {
   }
 }
 
+// The composer floats over the conversation, so the space the messages reserve
+// at the bottom has to follow its real height. A fixed reserve meant a grown
+// textarea buried the last messages with no way to scroll to them.
+function syncComposerHeight() {
+  const height = elements.composerWrap?.offsetHeight;
+  if (!Number.isFinite(height) || height <= 0) return;
+  const previous = state.composerHeight;
+  if (previous === height) return;
+  state.composerHeight = height;
+  document.documentElement.style.setProperty("--composer-height", `${height}px`);
+  // Growing the box would otherwise push the newest message out of sight.
+  if (previous !== null && height > previous) scheduleScrollToBottom();
+}
+
 function resizePrompt() {
   elements.prompt.style.height = "auto";
   elements.prompt.style.height = `${Math.min(elements.prompt.scrollHeight, 210)}px`;
   updateComposerControls();
+  syncComposerHeight();
 }
 
 function sidebarUsesOverlay() {
@@ -6477,6 +6494,15 @@ function collapseSidebar() {
 }
 
 let searchTimer;
+
+// Attachments, the prompt queue and the goal strip all change the composer's
+// height too, so observe the box rather than chasing each of them.
+if (typeof ResizeObserver === "function" && elements.composerWrap) {
+  new ResizeObserver(() => syncComposerHeight()).observe(elements.composerWrap);
+} else {
+  window.addEventListener("resize", syncComposerHeight);
+}
+syncComposerHeight();
 
 elements.prompt.addEventListener("input", () => {
   if (state.slashDismissedValue !== elements.prompt.value) {
