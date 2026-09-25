@@ -4125,12 +4125,24 @@ function restoreCurrentViewUrl() {
   }
 }
 
+// Where a new conversation starts, in order:
+//   1. the sidebar filter, when it is narrowed to one project — starting a chat
+//      while browsing a project almost always means starting it there;
+//   2. otherwise the project last chosen from the composer chip;
+//   3. otherwise no project.
+// A caller passing projectId explicitly (creating a project) overrides all of it.
+function defaultProjectForNewChat() {
+  if (state.activeProjectId && projectById(state.activeProjectId)) {
+    return state.activeProjectId;
+  }
+  if (state.lastProjectId === undefined) return null;
+  return state.lastProjectId;
+}
+
 function newChat({
   draftId = null,
   historyMode = "push",
-  projectId = state.lastProjectId === undefined
-    ? state.activeProjectId
-    : state.lastProjectId,
+  projectId = defaultProjectForNewChat(),
 } = {}) {
   if (!state.currentThreadId && attachmentUploadsForDraft() > 0) {
     toast("برای حفظ فایل‌های این پیش‌نویس، تا پایان افزودن آن‌ها صبر کنید.", "warning");

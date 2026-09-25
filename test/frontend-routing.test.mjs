@@ -2973,3 +2973,86 @@ test("the conversation reserves space for the composer's real height", async () 
     "the hint should no longer trail the composer",
   );
 });
+
+test(
+  "a new conversation follows the sidebar filter over the last chip choice",
+  { concurrency: false },
+  async (t) => {
+    const now = Math.floor(Date.now() / 1000);
+    const fetchHandler = async (path, options = {}) => {
+      if (path === "/api/status") return jsonResponse({ ready: true, cwd: "/workspace" });
+      if (path === "/api/projects") {
+        return jsonResponse({
+          projects: [
+            { id: "p-api", name: "api", cwd: "/workspace/api", instructions: "" },
+            { id: "p-web", name: "web", cwd: "/workspace/web", instructions: "" },
+          ],
+          threadProjects: {},
+        });
+      }
+      if (path === "/api/project-threads") return jsonResponse(JSON.parse(options.body));
+      if (path !== "/api/rpc") throw new Error(`Unexpected request: ${path}`);
+      const request = JSON.parse(options.body);
+      if (request.method === "model/list") return jsonResponse({ result: { data: [] } });
+      if (request.method === "collaborationMode/list") {
+        return jsonResponse({ result: { data: [] } });
+      }
+      if (request.method === "thread/list") {
+        return jsonResponse({
+          result: {
+            data: [
+              {
+                id: "t-web",
+                name: "وب",
+                cwd: "/workspace/web",
+                provider: "codex",
+                createdAt: now,
+                updatedAt: now,
+                status: { type: "idle" },
+              },
+            ],
+            nextCursor: null,
+          },
+        });
+      }
+      throw new Error(`Unexpected RPC method: ${request.method}`);
+    };
+
+    const { window } = await createHarness(t, { fetchHandler });
+    const document = window.document;
+    const chipLabel = () => document.querySelector("#project-chip-label").textContent;
+
+    await waitFor(
+      () => document.querySelector("#project-chip-list [data-project-id='p-api']"),
+      "the chip menu was not populated",
+    );
+
+    // Deliberately pick api from the chip, so it becomes the remembered choice.
+    document.querySelector("#project-chip").click();
+    document.querySelector("#project-chip-list [data-project-id='p-api']").click();
+    await waitFor(() => chipLabel() === "api", "the chip did not take the choice");
+
+    // Then narrow the sidebar to a different project and start a conversation.
+    document.querySelector("#project-switcher").click();
+    document.querySelector("#project-list [data-project-id='p-web']").click();
+    await waitFor(
+      () => document.querySelector("#project-switcher-name").textContent.trim() === "web",
+      "the sidebar filter did not move",
+    );
+    document.querySelector("#new-chat").click();
+    await waitFor(
+      () => chipLabel() === "web",
+      "a new conversation should start in the project being browsed",
+    );
+
+    // Clearing the filter falls back to the remembered choice.
+    document.querySelector("#project-switcher").click();
+    document.querySelector("#project-list [data-project-id='']").click();
+    document.querySelector("#new-chat").click();
+    await waitFor(
+      () => chipLabel() === "api",
+      "with no filter it should fall back to the last chosen project",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  },
+);
