@@ -244,20 +244,20 @@ function validateEffort(value) {
   return effort;
 }
 
-function publicId(rawId) {
-  return rawId.startsWith(PUBLIC_PREFIX) ? rawId : `${PUBLIC_PREFIX}${rawId}`;
+function publicId(rawId, prefix = PUBLIC_PREFIX) {
+  return rawId.startsWith(prefix) ? rawId : `${prefix}${rawId}`;
 }
 
-function rawId(value) {
-  return String(value || "").startsWith(PUBLIC_PREFIX)
-    ? String(value).slice(PUBLIC_PREFIX.length)
+function rawId(value, prefix = PUBLIC_PREFIX) {
+  return String(value || "").startsWith(prefix)
+    ? String(value).slice(prefix.length)
     : String(value || "");
 }
 
-function threadView(thread) {
+function threadView(thread, provider = { id: "claude", prefix: PUBLIC_PREFIX }) {
   return {
-    id: publicId(thread.id),
-    provider: "claude",
+    id: publicId(thread.id, provider.prefix),
+    provider: provider.id,
     providerThreadId: thread.id,
     name: thread.name || DEFAULT_THREAD_NAME,
     cwd: thread.cwd,
@@ -280,16 +280,16 @@ const RATE_LIMIT_WINDOW_MINUTES = {
 
 // Claude Code reports which quota window is active and when it resets, but no
 // percentage, so the snapshot carries no usage windows for the UI to chart.
-function rateLimitsFromEvent(info) {
+function rateLimitsFromEvent(info, provider = { id: "claude", label: "Claude" }) {
   if (!info || typeof info !== "object") return null;
   const resetsAt = Number(info.resetsAt);
   const rateLimitType = String(info.rateLimitType || "");
   const allowed = String(info.status || "allowed") === "allowed";
   return {
     rateLimitsByLimitId: {
-      claude: {
-        limitId: "claude",
-        limitName: "Claude",
+      [provider.id]: {
+        limitId: provider.id,
+        limitName: provider.label,
         usageUnavailable: true,
         allowed,
         isUsingOverage: Boolean(info.isUsingOverage),
@@ -447,6 +447,9 @@ async function findTranscripts(root, output = []) {
 
 export class ClaudeProvider {
   constructor({
+    id = "claude",
+    label = "Claude",
+    env = {},
     binary,
     cacheDir,
     claudeConfigDir,
@@ -456,6 +459,13 @@ export class ClaudeProvider {
     processExitGraceMs = PROCESS_EXIT_GRACE_MS,
     turnLockTimeoutMs = TURN_LOCK_TIMEOUT_MS,
   }) {
+    // One class serves every Claude Code profile (e.g. `claude` and a second
+    // account behind a proxy); the id namespaces thread ids and events.
+    this.id = id;
+    this.label = label;
+    this.cliName = id === "claude" ? "Claude Code CLI" : `Claude Code CLI (${label})`;
+    this.prefix = `${id}:`;
+    this.env = env;
     this.binary = binary;
     this.cacheDir = cacheDir;
     this.claudeConfigDir = claudeConfigDir || claudeHome;
@@ -615,7 +625,7 @@ export class ClaudeProvider {
     thread.name = name.length > 80 ? `${name.slice(0, 80)}…` : name;
     this.#markThreadDirty(thread, ["name"]);
     this.notify("thread/name/updated", {
-      threadId: publicId(thread.id),
+      threadId: publicId(thread.id, this.prefix),
       name: thread.name,
       threadName: thread.name,
     });
@@ -857,7 +867,9 @@ export class ClaudeProvider {
       ready: available,
       available,
       binary: this.binary,
-      message: available ? "Claude Code CLI آماده است" : "Claude Code CLI پیدا نشد",
+      label: this.label,
+      family: "claude",
+      message: available ? `${this.cliName} آماده است` : `${this.cliName} پیدا نشد`,
     };
   }
 
@@ -920,12 +932,12 @@ export class ClaudeProvider {
       })
       .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0))
       .slice(0, Number(params.limit) || 100)
-      .map(threadView);
+      .map((thread) => threadView(thread, this));
     return { data, nextCursor: null };
   }
 
   async readThread(value) {
-    const id = rawId(value);
+    const id = rawId(value, this.prefix);
     let thread = this.threads.get(id);
     if (!thread) {
       await this.#refreshStore({ onlyThreadId: id });
@@ -958,7 +970,7 @@ export class ClaudeProvider {
       }
     }
     return {
-      thread: { ...threadView(thread), turns },
+      thread: { ...threadView(thread, this), turns },
       tokenUsage: thread.tokenUsage || null,
     };
   }
@@ -1130,7 +1142,7 @@ export class ClaudeProvider {
     const timestamp = nowSeconds();
     const thread = {
       id: String(id),
-      provider: "claude",
+      provider: this.id,
       name: params.name || DEFAULT_THREAD_NAME,
       cwd,
       model: params.model || "",
@@ -1153,11 +1165,11 @@ export class ClaudeProvider {
       this.threadRevisions.delete(thread.id);
       throw error;
     }
-    return { thread: { ...threadView(thread), turns: [] } };
+    return { thread: { ...threadView(thread, this), turns: [] } };
   }
 
   async archiveThread(params, archived) {
-    const thread = this.threads.get(rawId(params.threadId));
+    const thread = this.threads.get(rawId(params.threadId, this.prefix));
     if (!thread) throw new Error("گفتگوی Claude پیدا نشد");
     thread.archived = archived;
     thread.updatedAt = nowSeconds();
@@ -1167,11 +1179,11 @@ export class ClaudeProvider {
       this.#markThreadDirty(thread, ["archived", "updatedAt"]);
     }
     await this.persist();
-    return { thread: threadView(thread) };
+    return { thread: threadView(thread, this) };
   }
 
   async setName(params) {
-    const thread = this.threads.get(rawId(params.threadId));
+    const thread = this.threads.get(rawId(params.threadId, this.prefix));
     if (!thread) throw new Error("گفتگوی Claude پیدا نشد");
     thread.name = String(params.name || params.threadName || DEFAULT_THREAD_NAME).trim();
     if (!thread.name) thread.name = DEFAULT_THREAD_NAME;
@@ -1184,15 +1196,15 @@ export class ClaudeProvider {
     }
     await this.persist();
     this.notify("thread/name/updated", {
-      threadId: publicId(thread.id),
+      threadId: publicId(thread.id, this.prefix),
       name: thread.name,
       threadName: thread.name,
     });
-    return { thread: threadView(thread) };
+    return { thread: threadView(thread, this) };
   }
 
   #requireThread(value) {
-    const thread = this.threads.get(rawId(value));
+    const thread = this.threads.get(rawId(value, this.prefix));
     if (!thread) throw new Error("گفتگوی Claude پیدا نشد");
     return thread;
   }
@@ -1202,7 +1214,7 @@ export class ClaudeProvider {
     else this.#markThreadDirty(thread, ["goal"]);
     await this.#queuePersist();
     this.notify("thread/goal/updated", {
-      threadId: publicId(thread.id),
+      threadId: publicId(thread.id, this.prefix),
       goal: thread.goal || null,
     });
   }
@@ -1249,7 +1261,7 @@ export class ClaudeProvider {
   // `/compact`): the prompt and the reply are not shown as chat messages, the
   // turn is represented by a single activity item of that type instead.
   async startTurn(params, { controlItemType = "" } = {}) {
-    const thread = this.threads.get(rawId(params.threadId));
+    const thread = this.threads.get(rawId(params.threadId, this.prefix));
     if (!thread) throw new Error("گفتگوی Claude پیدا نشد");
     if (this.processes.has(thread.id)) throw new Error("این گفتگوی Claude در حال اجراست");
     if (this.stopping) throw new Error("Claude provider در حال توقف است");
@@ -1428,20 +1440,20 @@ export class ClaudeProvider {
       throw error;
     }
 
-    this.notify("thread/status/changed", { threadId: publicId(thread.id), status: thread.status });
+    this.notify("thread/status/changed", { threadId: publicId(thread.id, this.prefix), status: thread.status });
     this.notify("turn/started", {
-      threadId: publicId(thread.id),
+      threadId: publicId(thread.id, this.prefix),
       turn: { id: turn.id, status: "inProgress" },
     });
     if (!controlItemType) {
       this.notify("item/started", {
-        threadId: publicId(thread.id),
+        threadId: publicId(thread.id, this.prefix),
         turnId: turn.id,
         item: userItem,
       });
     }
     this.notify("item/started", {
-      threadId: publicId(thread.id),
+      threadId: publicId(thread.id, this.prefix),
       turnId: turn.id,
       item: assistantItem,
     });
@@ -1510,6 +1522,7 @@ export class ClaudeProvider {
           cwd: thread.cwd,
           env: {
             ...process.env,
+            ...this.env,
             CLAUDE_CONFIG_DIR: this.claudeConfigDir,
           },
           stdio: ["pipe", "pipe", "pipe"],
@@ -1611,7 +1624,7 @@ export class ClaudeProvider {
       return;
     }
     if (message.type === "rate_limit_event") {
-      const rateLimits = rateLimitsFromEvent(message.rate_limit_info);
+      const rateLimits = rateLimitsFromEvent(message.rate_limit_info, this);
       if (rateLimits) {
         this.rateLimits = rateLimits;
         this.notify("account/rateLimits/updated", rateLimits);
@@ -1647,7 +1660,7 @@ export class ClaudeProvider {
             toolItem.status = block.is_error ? "failed" : "completed";
             toolItem.aggregatedOutput = output;
             this.notify("item/completed", {
-              threadId: publicId(thread.id),
+              threadId: publicId(thread.id, this.prefix),
               turnId: turn.id,
               item: toolItem,
             });
@@ -1655,7 +1668,7 @@ export class ClaudeProvider {
             continue;
           }
           this.notify("item/commandExecution/outputDelta", {
-            threadId: publicId(thread.id),
+            threadId: publicId(thread.id, this.prefix),
             turnId: turn.id,
             itemId: `${turn.id}:${block.tool_use_id || "tool"}`,
             delta: output,
@@ -1689,7 +1702,7 @@ export class ClaudeProvider {
         thread.tokenUsage = tokenUsage;
         if (!thread.native) this.#markThreadDirty(thread, ["tokenUsage"]);
         this.notify("thread/tokenUsage/updated", {
-          threadId: publicId(thread.id),
+          threadId: publicId(thread.id, this.prefix),
           tokenUsage,
         });
       }
@@ -1722,7 +1735,7 @@ export class ClaudeProvider {
     assistantItem.text += delta;
     if (processState.controlItemType) return;
     this.notify("item/agentMessage/delta", {
-      threadId: publicId(thread.id),
+      threadId: publicId(thread.id, this.prefix),
       turnId: turn.id,
       itemId: assistantItem.id,
       delta,
@@ -1742,7 +1755,7 @@ export class ClaudeProvider {
     processState.toolItems.set(toolId, item);
     turn.items.push(item);
     this.notify("item/started", {
-      threadId: publicId(thread.id),
+      threadId: publicId(thread.id, this.prefix),
       turnId: turn.id,
       item,
     });
@@ -1762,7 +1775,7 @@ export class ClaudeProvider {
         for (const toolItem of processState.toolItems.values()) {
           toolItem.status = status === "interrupted" ? "interrupted" : "failed";
           this.notify("item/completed", {
-            threadId: publicId(thread.id),
+            threadId: publicId(thread.id, this.prefix),
             turnId: turn.id,
             item: toolItem,
           });
@@ -1794,12 +1807,12 @@ export class ClaudeProvider {
         }
 
         this.notify("item/completed", {
-          threadId: publicId(thread.id),
+          threadId: publicId(thread.id, this.prefix),
           turnId: turn.id,
           item: assistantItem,
         });
         this.notify("turn/completed", {
-          threadId: publicId(thread.id),
+          threadId: publicId(thread.id, this.prefix),
           turn: { id: turn.id, status, error: turn.error },
         });
         // Claude writes the title into the session file as the turn lands, so
@@ -1807,7 +1820,7 @@ export class ClaudeProvider {
         // next discovery sweep.
         await this.#refreshPlaceholderName(thread);
         this.notify("thread/status/changed", {
-          threadId: publicId(thread.id),
+          threadId: publicId(thread.id, this.prefix),
           status: thread.status,
         });
       }
@@ -1846,7 +1859,7 @@ export class ClaudeProvider {
   }
 
   async interruptTurn(params) {
-    const thread = this.threads.get(rawId(params.threadId));
+    const thread = this.threads.get(rawId(params.threadId, this.prefix));
     const processState = thread && this.processes.get(thread.id);
     if (!processState) return { turn: null };
     if (
@@ -1867,7 +1880,7 @@ export class ClaudeProvider {
   }
 
   notify(method, params) {
-    this.emit({ method, params: { ...params, provider: "claude" } });
+    this.emit({ method, params: { ...params, provider: this.id } });
   }
 
   async stop() {

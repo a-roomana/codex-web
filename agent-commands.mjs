@@ -27,10 +27,10 @@ export function codexHomeDir(env = process.env) {
 
 // Each root contributes `skills/<name>/SKILL.md` plus flat `<promptsDir>/<name>.md`
 // files. Project roots win over user roots when both define the same name.
-export function agentCommandRoots({ provider, cwd, env = process.env } = {}) {
+export function agentCommandRoots({ provider, cwd, env = process.env, claudeConfigDir: configDir } = {}) {
   const roots = [];
   if (provider === "claude") {
-    roots.push({ dir: claudeConfigDir(env), promptsDir: "commands", scope: "user" });
+    roots.push({ dir: configDir || claudeConfigDir(env), promptsDir: "commands", scope: "user" });
     if (cwd) roots.push({ dir: join(cwd, ".claude"), promptsDir: "commands", scope: "project" });
   } else {
     roots.push({ dir: codexHomeDir(env), promptsDir: "prompts", scope: "user" });
@@ -153,10 +153,16 @@ async function collectPrompts(root, provider, into) {
   }
 }
 
-export async function listAgentCommands({ provider, cwd = "", env = process.env } = {}) {
+export async function listAgentCommands({
+  provider,
+  cwd = "",
+  env = process.env,
+  claudeConfigDir: configDir,
+} = {}) {
   const normalizedProvider = provider === "claude" ? "claude" : "codex";
   const found = new Map();
-  for (const root of agentCommandRoots({ provider: normalizedProvider, cwd, env })) {
+  const roots = agentCommandRoots({ provider: normalizedProvider, cwd, env, claudeConfigDir: configDir });
+  for (const root of roots) {
     await collectSkills(root, normalizedProvider, found);
     await collectPrompts(root, normalizedProvider, found);
   }
@@ -166,7 +172,11 @@ export async function listAgentCommands({ provider, cwd = "", env = process.env 
 }
 
 export async function listAgentCommandsCached(options = {}) {
-  const key = `${options.provider === "claude" ? "claude" : "codex"}\u0000${options.cwd || ""}`;
+  const key = [
+    options.provider === "claude" ? "claude" : "codex",
+    options.claudeConfigDir || "",
+    options.cwd || "",
+  ].join("\u0000");
   const now = Date.now();
   const hit = cache.get(key);
   if (hit && now - hit.at < CACHE_TTL_MS) return hit.commands;

@@ -17,6 +17,8 @@ const IMAGE_EXTENSIONS = {
   "image/png": "png",
   "image/webp": "webp",
 };
+// Provider ids: `codex`, `claude`, or a configured Claude profile id.
+const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 // Capabilities each agent CLI can actually back. Slash commands and composer
 // tools are gated on these instead of on the provider name.
 const PROVIDER_CAPABILITIES = {
@@ -500,7 +502,9 @@ function loadSettings() {
       palette: ACCENT_PALETTES.has(savedSettings.palette)
         ? savedSettings.palette
         : defaultSettings.palette,
-      provider: savedSettings.provider === "claude" ? "claude" : defaultSettings.provider,
+      provider: PROVIDER_ID_PATTERN.test(savedSettings.provider || "")
+        ? savedSettings.provider
+        : defaultSettings.provider,
       sidebarCollapsed: savedSettings.sidebarCollapsed === true,
     };
   } catch {
@@ -539,14 +543,38 @@ async function api(path, options = {}) {
   return data;
 }
 
+// Thread ids of Claude-family providers are `<provider id>:<session id>`
+// (`claude:…`, `cldtorob:…`); Codex ids carry no prefix.
 function providerForThread(threadId) {
-  return typeof threadId === "string" && threadId.startsWith("claude:")
-    ? "claude"
-    : "codex";
+  const match = typeof threadId === "string" && /^([a-z][a-z0-9-]{0,31}):/.exec(threadId);
+  return match && match[1] !== "codex" ? match[1] : "codex";
+}
+
+// `codex` or `claude`: what the provider can do. Every non-Codex provider is a
+// Claude Code profile, so it shares Claude's permission modes and efforts.
+function providerFamily(provider) {
+  return provider === "codex" ? "codex" : "claude";
+}
+
+function isClaudeFamily(provider) {
+  return providerFamily(provider) === "claude";
+}
+
+// Codex first, then every Claude profile in the order the server lists them.
+function knownProviders() {
+  const ids = Object.keys(state.providerStatuses).filter((id) => id !== "codex");
+  return ["codex", ...ids.sort((left, right) => (left === "claude" ? -1 : right === "claude" ? 1 : 0))];
 }
 
 function providerLabel(provider) {
-  return provider === "claude" ? "Claude" : "Codex";
+  if (provider === "codex") return "Codex";
+  return state.providerStatuses[provider]?.label || (provider === "claude" ? "Claude" : provider);
+}
+
+function providerCliLabel(provider) {
+  if (provider === "codex") return "Codex CLI";
+  if (provider === "claude") return "Claude Code CLI";
+  return `Claude Code CLI (${providerLabel(provider)})`;
 }
 
 function effectiveProvider() {
@@ -559,7 +587,7 @@ function effectiveProvider() {
 }
 
 function providerSupports(capability, provider = effectiveProvider()) {
-  return PROVIDER_CAPABILITIES[provider]?.has(capability) ?? false;
+  return PROVIDER_CAPABILITIES[providerFamily(provider)]?.has(capability) ?? false;
 }
 
 function providerSupportsPlanMode(provider = effectiveProvider()) {
@@ -1429,7 +1457,7 @@ function showSlashStatus() {
     ["پوشهٔ کاری", runtime.cwd || thread?.cwd || state.settings.cwd || "نامشخص"],
     ["مدل", runtime.model || thread?.model || selectedModel || `پیش‌فرض ${label}`],
   ];
-  if (provider === "claude") {
+  if (isClaudeFamily(provider)) {
     rows.push([
       "Permission mode",
       runtime.permissionMode ||
@@ -1568,7 +1596,7 @@ async function executeSlashCommand(command) {
       clearSlashCommandText(command.token, targetDraftKey);
       openSettings({
         focus:
-          effectiveProvider() === "claude"
+          isClaudeFamily(effectiveProvider())
             ? elements.claudePermissionMode
             : elements.sandboxSelect,
         provider: effectiveProvider(),
@@ -2028,10 +2056,11 @@ function updateAgentCopy(provider) {
       "پوشه و دستورهای این پروژه برای گفتگوی تازه اعمال می‌شوند.";
     return;
   }
-  if (provider === "claude") {
-    elements.welcomeTitle.textContent = "امروز چی رو به Claude بسپاریم؟";
+  if (isClaudeFamily(provider)) {
+    const label = providerLabel(provider);
+    elements.welcomeTitle.textContent = `امروز چی رو به ${label} بسپاریم؟`;
     elements.welcomeDescription.textContent =
-      "کد، فایل یا ایده‌ات را بفرست؛ ابزارهای فنی Claude پشت صحنه آماده‌اند.";
+      `کد، فایل یا ایده‌ات را بفرست؛ ابزارهای فنی ${label} پشت صحنه آماده‌اند.`;
   } else {
     elements.welcomeTitle.textContent = "امروز روی چی کار کنیم؟";
     elements.welcomeDescription.textContent =
@@ -2054,7 +2083,8 @@ function updateConnection() {
 }
 
 function setProviderStatus(provider, status = {}) {
-  if (provider !== "codex" && provider !== "claude") return false;
+  if (!PROVIDER_ID_PATTERN.test(provider || "")) return false;
+  const isNew = !state.providerStatuses[provider];
   const previous = state.providerStatuses[provider] || {};
   const next = {
     ...previous,
@@ -2062,19 +2092,24 @@ function setProviderStatus(provider, status = {}) {
     ready: Boolean(status.ready),
   };
   state.providerStatuses[provider] = next;
-  return previous.ready !== next.ready || previous.message !== next.message;
+  if (isNew) renderProviderSelectOptions();
+  return isNew || previous.ready !== next.ready || previous.message !== next.message;
 }
 
 function applyProviderStatusPayload(data = {}) {
   let changed = false;
   if (data.providers) {
-    for (const provider of ["codex", "claude"]) {
-      if (data.providers[provider]) {
-        changed = setProviderStatus(provider, data.providers[provider]) || changed;
-      }
+    for (const [provider, status] of Object.entries(data.providers)) {
+      if (status) changed = setProviderStatus(provider, status) || changed;
+    }
+    // A profile removed from the server config can't stay the default.
+    if (!data.providers[state.settings.provider]) {
+      state.settings.provider = defaultSettings.provider;
+      persistSettings();
+      changed = true;
     }
   } else if (
-    (data.provider === "codex" || data.provider === "claude") &&
+    PROVIDER_ID_PATTERN.test(data.provider || "") &&
     Object.hasOwn(data, "ready")
   ) {
     changed =
@@ -2095,8 +2130,7 @@ function applyProviderStatusPayload(data = {}) {
 }
 
 function markProviderConnectionsUnavailable(message) {
-  setProviderStatus("codex", { message, ready: false });
-  setProviderStatus("claude", { message, ready: false });
+  for (const provider of knownProviders()) setProviderStatus(provider, { message, ready: false });
   updateConnection();
 }
 
@@ -2119,9 +2153,25 @@ function setNavigating(navigating) {
   resizePrompt();
 }
 
+// The settings dialog lists the same providers as the composer chip.
+function renderProviderSelectOptions() {
+  const select = elements.providerSelect;
+  if (!select) return;
+  const current = select.value;
+  select.replaceChildren(
+    ...knownProviders().map((provider) => {
+      const option = document.createElement("option");
+      option.value = provider;
+      option.textContent = providerCliLabel(provider);
+      return option;
+    }),
+  );
+  select.value = knownProviders().includes(current) ? current : state.settings.provider;
+}
+
 function updateFullAccessWarning(provider = elements.providerSelect.value) {
   const dangerous =
-    provider === "claude"
+    isClaudeFamily(provider)
       ? elements.claudePermissionMode.value === "bypassPermissions"
       : elements.sandboxSelect.value === "danger-full-access";
   elements.fullAccessWarning.classList.toggle("visible", dangerous);
@@ -2131,9 +2181,9 @@ function updateSettingsProviderUi(provider) {
   elements.settingsDialog.dataset.provider = provider;
   const ultraEffort = elements.effortSelect.querySelector('option[value="ultra"]');
   if (ultraEffort) {
-    ultraEffort.disabled = provider === "claude";
-    ultraEffort.hidden = provider === "claude";
-    if (provider === "claude" && elements.effortSelect.value === "ultra") {
+    ultraEffort.disabled = isClaudeFamily(provider);
+    ultraEffort.hidden = isClaudeFamily(provider);
+    if (isClaudeFamily(provider) && elements.effortSelect.value === "ultra") {
       elements.effortSelect.value = "";
     } else if (
       provider === "codex" &&
@@ -2269,11 +2319,11 @@ function renderRunChipMenu() {
   const selectedModel = state.settings.modelByProvider[provider] || "";
 
   elements.providerOptions.replaceChildren();
-  for (const candidate of ["codex", "claude"]) {
+  for (const candidate of knownProviders()) {
     elements.providerOptions.append(
       buildChoiceRow({
         value: candidate,
-        label: candidate === "claude" ? "Claude Code CLI" : "Codex CLI",
+        label: providerCliLabel(candidate),
         selected: candidate === provider,
         dataset: "providerValue",
       }),
@@ -2310,7 +2360,7 @@ function renderRunChipMenu() {
 }
 
 function setRunProvider(provider) {
-  if (provider !== "codex" && provider !== "claude") return;
+  if (!state.providerStatuses[provider]) return;
   if (provider === state.settings.provider) return;
   state.settings.provider = provider;
   persistSettings();
@@ -3404,8 +3454,9 @@ function buildThreadItem(thread, { showProject = false } = {}) {
   const provider = document.createElement("span");
   provider.className = "thread-provider";
   provider.dir = "ltr";
-  provider.textContent = thread.provider === "claude" ? "Claude" : "Codex";
-  provider.title = thread.provider === "claude" ? "Claude Code CLI" : "Codex CLI";
+  const threadProvider = thread.provider || providerForThread(thread.id);
+  provider.textContent = providerLabel(threadProvider);
+  provider.title = providerCliLabel(threadProvider);
   origin.append(provider);
 
   const time = document.createElement("span");
@@ -5288,7 +5339,7 @@ async function ensureThread(sourceThreadId, navigationVersion, sourceDraftKey) {
   }
   const model = state.settings.modelByProvider[state.settings.provider] || "";
   if (model) params.model = model;
-  if (state.settings.provider === "claude" && state.settings.claudePermissionMode) {
+  if (isClaudeFamily(state.settings.provider) && state.settings.claudePermissionMode) {
     params.permissionMode = state.settings.claudePermissionMode;
   }
   const result = await rpc("thread/start", params);
@@ -5402,7 +5453,7 @@ async function sendPrompt(
       // select the default preset so switching Plan mode off changes the next turn.
       params.collaborationMode = defaultCollaborationMode();
     }
-    if (planMode && provider === "claude") {
+    if (planMode && isClaudeFamily(provider)) {
       // Claude Code has no collaboration mode; plan mode is a permission mode.
       params.permissionMode = "plan";
     }
