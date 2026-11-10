@@ -9,7 +9,11 @@ import { randomUUID } from "node:crypto";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
-import { listAgentCommandsCached } from "./agent-commands.mjs";
+import {
+  CLAUDE_FALLBACK_CLI_COMMANDS,
+  cliCommandEntries,
+  listAgentCommandsCached,
+} from "./agent-commands.mjs";
 import { ClaudeProvider } from "./providers/claude-provider.mjs";
 import { defaultProfilesPath, loadClaudeProfiles } from "./providers/claude-profiles.mjs";
 import {
@@ -956,11 +960,22 @@ const server = createServer(async (req, res) => {
       const provider = claudeProviders.has(requested) ? requested : "codex";
       const requestedCwd = url.searchParams.get("cwd") || "";
       const cwd = isAbsolute(requestedCwd) ? resolve(requestedCwd) : DEFAULT_CWD;
-      const commands = await listAgentCommandsCached({
-        cwd,
-        provider: provider === "codex" ? "codex" : "claude",
-        claudeConfigDir: claudeProviders.get(provider)?.claudeConfigDir,
-      });
+      const claude = claudeProviders.get(provider);
+      // A copy: the cached list must not grow with the CLI entries below.
+      const commands = [
+        ...(await listAgentCommandsCached({
+          cwd,
+          provider: claude ? "claude" : "codex",
+          claudeConfigDir: claude?.claudeConfigDir,
+        })),
+      ];
+      if (claude) {
+        // Skills and prompt files found on disk keep their richer metadata;
+        // everything else the CLI reported (built-ins, plugin skills) follows.
+        const names = (await claude.cliCommandNames()) || CLAUDE_FALLBACK_CLI_COMMANDS;
+        const exclude = new Set(commands.map((command) => command.name.toLowerCase()));
+        commands.push(...cliCommandEntries(names, { exclude }));
+      }
       return json(res, 200, {
         // `path` stays on the server: the composer only needs name and copy.
         commands: commands.map(({ path, ...command }) => command),

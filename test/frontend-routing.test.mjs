@@ -1015,11 +1015,15 @@ test(
         "plan",
         "compact",
         "new",
+        "clear",
+        "rename",
         "resume",
         "status",
         "usage",
         "model",
         "permissions",
+        "settings",
+        "help",
       ],
     );
 

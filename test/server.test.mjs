@@ -475,6 +475,22 @@ test("Claude provider supports sessions, streaming, resume, and merged thread li
   const nativeArgs = JSON.parse(await readFile(argsFile, "utf8"));
   assert.equal(nativeArgs.includes("--resume"), true);
 
+  // The command list the CLI reported on its run is offered in the composer.
+  const commandList = await (
+    await fetch(`${baseUrl}/api/agent-commands?provider=claude&cwd=${encodeURIComponent(temporaryRoot)}`)
+  ).json();
+  const listed = commandList.commands.map((command) => command.name);
+  assert.ok(listed.includes("init"));
+  assert.ok(listed.includes("anthropic-skills:pdf"));
+  assert.ok(!listed.includes("heapdump") && !listed.includes("__internal"));
+  // A profile that has not run yet falls back to the headless built-ins.
+  const profileCommands = await (
+    await fetch(`${baseUrl}/api/agent-commands?provider=torob&cwd=${encodeURIComponent(temporaryRoot)}`)
+  ).json();
+  assert.equal(profileCommands.provider, "torob");
+  assert.ok(profileCommands.commands.some((command) => command.name === "security-review"));
+  assert.ok(!profileCommands.commands.some((command) => command.name === "anthropic-skills:pdf"));
+
   // A configured profile is its own provider: own ids, own env, own transcripts.
   const status = await (await fetch(`${baseUrl}/api/status`)).json();
   assert.deepEqual(Object.keys(status.providers), ["codex", "claude", "torob"]);

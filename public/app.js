@@ -51,6 +51,16 @@ const SLASH_COMMANDS = [
     description: "شروع یک گفتگوی مستقل جدید",
   },
   {
+    name: "clear",
+    label: "پاک‌کردن و شروع دوباره",
+    description: "بستن این گفتگو و شروع یک گفتگوی تازه (مثل /clear در CLI)",
+  },
+  {
+    name: "rename",
+    label: "تغییر نام گفتگو",
+    description: "ویرایش عنوان گفتگوی باز",
+  },
+  {
     name: "resume",
     label: "ادامهٔ یک گفتگو",
     description: "رفتن به فهرست گفتگوهای ذخیره‌شده",
@@ -76,9 +86,21 @@ const SLASH_COMMANDS = [
     label: "تنظیم دسترسی‌ها",
     description: "بازکردن تنظیمات sandbox و approval",
   },
+  {
+    name: "settings",
+    label: "تنظیمات",
+    description: "بازکردن همهٔ تنظیمات Codex Web",
+  },
+  {
+    name: "help",
+    label: "راهنمای فرمان‌ها",
+    description: "نمایش همهٔ فرمان‌هایی که این ارائه‌دهنده پشتیبانی می‌کند",
+  },
 ].map((command) => ({ ...command, kind: "builtin", token: `/${command.name}` }));
 
 const BUILTIN_SLASH_COMMAND_NAMES = new Set(SLASH_COMMANDS.map((command) => command.name));
+// `name` or `plugin:name`, as Claude Code reports plugin skills.
+const SLASH_COMMAND_NAME = "[a-z0-9][a-z0-9_-]*(?::[a-z0-9][a-z0-9_-]*)?";
 // How long a fetched skill/prompt list stays trusted before the composer asks
 // the server again. Keeps newly created skills reachable without polling.
 const AGENT_COMMANDS_TTL_MS = 15_000;
@@ -664,18 +686,22 @@ async function refreshAgentCommands({ force = false } = {}) {
       const commands = (Array.isArray(data.commands) ? data.commands : [])
         .filter(
           (command) =>
-            /^[a-z][a-z0-9-]*$/i.test(String(command?.name || "")) &&
+            new RegExp(`^${SLASH_COMMAND_NAME}$`, "i").test(String(command?.name || "")) &&
             !BUILTIN_SLASH_COMMAND_NAMES.has(String(command.name).toLowerCase()),
         )
         .map((command) => ({
           description:
             String(command.description || "").trim() ||
-            (command.kind === "prompt" ? "پرامپت سفارشی" : "مهارت سفارشی"),
-          kind: command.kind === "prompt" ? "prompt" : "skill",
+            (command.kind === "prompt"
+              ? "پرامپت سفارشی"
+              : command.kind === "cli"
+                ? `فرمان ${providerCliLabel(provider)}`
+                : "مهارت سفارشی"),
+          kind: ["prompt", "cli"].includes(command.kind) ? command.kind : "skill",
           label: String(command.name),
           name: String(command.name).toLowerCase(),
           provider,
-          scope: command.scope === "project" ? "project" : "user",
+          scope: ["project", "plugin", "cli"].includes(command.scope) ? command.scope : "user",
           token: `/${String(command.name).toLowerCase()}`,
         }));
       if (agentCommandsKey() !== key) return state.agentCommands;
@@ -706,7 +732,7 @@ function agentCommandsForProvider(provider = effectiveProvider()) {
 }
 
 function isAgentCommand(command) {
-  return command?.kind === "skill" || command?.kind === "prompt";
+  return command?.kind === "skill" || command?.kind === "prompt" || command?.kind === "cli";
 }
 
 function allSlashCommands(provider = effectiveProvider()) {
@@ -734,7 +760,7 @@ function parseSlashCommand(text) {
   if (!candidate.startsWith("/")) return null;
   const token = candidate.match(/^\/\S*/)?.[0] || "/";
   const singlePathPart = token.slice(1);
-  const commandNameMatch = singlePathPart.match(/^([a-z][a-z0-9-]*)$/i);
+  const commandNameMatch = singlePathPart.match(new RegExp(`^(${SLASH_COMMAND_NAME})$`, "i"));
   const commandName = commandNameMatch ? commandNameMatch[1].toLowerCase() : "";
   const knownCodexCommand = Boolean(
     commandName &&
@@ -748,7 +774,7 @@ function parseSlashCommand(text) {
       COMMON_ABSOLUTE_PATH_ROOTS.has(singlePathPart) ||
       /^[A-Z][A-Za-z0-9._-]*$/.test(singlePathPart));
   if (pathLike) return null;
-  const match = token.match(/^\/([a-z][a-z0-9-]*)$/i);
+  const match = token.match(new RegExp(`^/(${SLASH_COMMAND_NAME})$`, "i"));
   return {
     arguments: candidate.slice(token.length).trim(),
     command: match ? slashCommandByName(match[1].toLowerCase()) : null,
@@ -802,13 +828,16 @@ function slashCommandAvailability(command) {
   ) {
     return { available: false, reason: "تا پایان افزودن فایل‌ها صبر کنید." };
   }
+  if (command.name === "rename" && !state.currentThreadId) {
+    return { available: false, reason: "ابتدا یک گفتگو را باز کنید." };
+  }
   return { available: true, reason: "" };
 }
 
 function slashComposerQuery() {
   const value = elements.prompt.value;
   if (state.navigating || state.slashDismissedValue === value) return null;
-  if (!/^\/[a-z0-9-]*$/i.test(value)) return null;
+  if (!/^\/[a-z0-9_:-]*$/i.test(value)) return null;
   const { start, end } = promptSelection();
   if (start !== value.length || end !== value.length) return null;
   return value.slice(1).toLowerCase();
@@ -851,7 +880,7 @@ function updateSlashCommandMenu({ keepActiveCommand = true } = {}) {
     const availability = slashCommandAvailability(command);
     const option = document.createElement("button");
     option.type = "button";
-    option.id = `slash-command-${command.name}`;
+    option.id = `slash-command-${command.name.replace(/[^a-z0-9_-]/gi, "-")}`;
     option.className = `slash-command-option${index === state.slashActiveIndex ? " active" : ""}`;
     option.dataset.slashCommand = command.name;
     option.setAttribute("role", "option");
@@ -899,6 +928,8 @@ function updateSlashCommandMenu({ keepActiveCommand = true } = {}) {
 
 function slashCommandBadge(command) {
   if (!isAgentCommand(command)) return "";
+  if (command.scope === "plugin") return "پلاگین";
+  if (command.kind === "cli") return "CLI";
   const kind = command.kind === "prompt" ? "پرامپت" : "مهارت";
   return command.scope === "project" ? `${kind} پروژه` : kind;
 }
@@ -1569,8 +1600,25 @@ async function executeSlashCommand(command) {
       await runCompactSlashCommand(command);
       return;
     case "new":
+    case "clear":
       clearSlashCommandText(command.token, targetDraftKey);
       newChat();
+      return;
+    case "rename":
+      clearSlashCommandText(command.token, targetDraftKey);
+      startTitleRename();
+      return;
+    case "settings":
+      clearSlashCommandText(command.token, targetDraftKey);
+      openSettings({ provider: effectiveProvider() });
+      return;
+    case "help":
+      // The full list is the slash menu itself, filtered to this provider.
+      elements.prompt.value = "/";
+      state.drafts.set(targetDraftKey, "/");
+      state.slashDismissedValue = null;
+      elements.prompt.focus();
+      updateSlashCommandMenu({ keepActiveCommand: false });
       return;
     case "resume":
       clearSlashCommandText(command.token, targetDraftKey);

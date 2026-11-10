@@ -17,6 +17,10 @@ import { spawn } from "node:child_process";
 
 const PUBLIC_PREFIX = "claude:";
 const STORE_FILE = "conversations.json";
+// The slash commands the CLI last reported in its `init` event, so the composer
+// can list what this profile really supports (built-ins, plugins, skills).
+const CLI_COMMANDS_FILE = "cli-commands.json";
+const CLI_COMMAND_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*(?::[a-z0-9][a-z0-9_-]*)?$/i;
 const STORE_LOCK_FILE = ".conversations.lock";
 const TURN_LOCK_DIR = "turn-locks";
 const DISCOVERY_CACHE_MS = 30_000;
@@ -488,7 +492,44 @@ export class ClaudeProvider {
     this.lastDiscoveryAt = 0;
     this.binaryCheck = { at: 0, available: false, promise: null };
     this.rateLimits = null;
+    this.cliCommands = undefined;
     this.stopping = false;
+  }
+
+  // Names the CLI reported on its last run, or null before the first one.
+  async cliCommandNames() {
+    if (this.cliCommands === undefined) {
+      try {
+        const data = JSON.parse(await readFile(join(this.cacheDir, CLI_COMMANDS_FILE), "utf8"));
+        this.cliCommands = Array.isArray(data.commands) ? data.commands : null;
+      } catch {
+        this.cliCommands = null;
+      }
+    }
+    return this.cliCommands;
+  }
+
+  async #rememberCliCommands(list) {
+    const names = [
+      ...new Set(
+        list
+          .map((name) => String(name || "").replace(/^\//, ""))
+          .filter((name) => CLI_COMMAND_NAME_PATTERN.test(name)),
+      ),
+    ];
+    const previous = await this.cliCommandNames();
+    if (previous && previous.join("\n") === names.join("\n")) return;
+    this.cliCommands = names;
+    try {
+      await mkdir(this.cacheDir, { recursive: true, mode: 0o700 });
+      await writeFile(
+        join(this.cacheDir, CLI_COMMANDS_FILE),
+        JSON.stringify({ commands: names, updatedAt: nowSeconds() }),
+        { mode: 0o600 },
+      );
+    } catch (error) {
+      this.log(`Could not save the ${this.label} command list: ${error.message}`);
+    }
   }
 
   async #readStore() {
@@ -1612,6 +1653,9 @@ export class ClaudeProvider {
       return;
     }
     if (message.type === "system" && message.subtype === "init") {
+      if (Array.isArray(message.slash_commands)) {
+        void this.#rememberCliCommands(message.slash_commands);
+      }
       if (!thread.sessionInitialized) {
         thread.sessionInitialized = true;
         if (!thread.native) {
