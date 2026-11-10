@@ -2001,6 +2001,7 @@ function updateComposerControls() {
     queueMode ? "افزودن پیام به صف" : "ارسال پیام",
   );
   elements.sendMessage.title = queueMode ? "افزودن به صف" : "ارسال";
+  elements.stopTurn.disabled = !state.busy || !state.currentTurnId;
   elements.composerHint.textContent = state.busy
     ? "Enter برای افزودن به صف · Shift+Enter برای خط جدید"
     : "Enter برای ارسال · Shift+Enter برای خط جدید";
@@ -2102,7 +2103,6 @@ function markProviderConnectionsUnavailable(message) {
 function setBusy(busy, turnId = null) {
   state.busy = busy;
   state.currentTurnId = busy ? turnId : null;
-  elements.stopTurn.classList.toggle("hidden", !busy || !state.currentTurnId);
   updateComposerControls();
 }
 
@@ -2200,24 +2200,42 @@ function effortsForCurrentModel(provider = state.settings.provider) {
   return [{ value: "", description: "", label: fallbackLabel }, ...allowed];
 }
 
-function updateModelLabel(provider = state.settings.provider) {
-  const selected = state.settings.modelByProvider[provider] || "";
-  const name = modelEntry(provider)?.displayName || selected || "مدل پیش‌فرض";
-  const effort = state.settings.effort;
-  elements.modelLabel.textContent =
-    effort && EFFORT_LABELS[effort] ? `${name} · ${EFFORT_LABELS[effort]}` : name;
+// An open conversation is bound to the provider it was started with, so the
+// run menu edits that provider's model; a fresh chat uses the global default.
+function activeRunProvider() {
+  if (!state.currentThreadId) return state.settings.provider;
+  return (
+    state.currentThread?.provider ||
+    providerForThread(state.currentThreadId) ||
+    state.settings.provider
+  );
+}
 
-  // The topbar readout used to carry the open thread's real provider/cwd/model;
-  // keep that detail here rather than losing it with the readout.
+function updateModelLabel(provider = state.settings.provider) {
+  // An open conversation keeps the provider/model it was started with — the
+  // chip must reflect that thread, not whatever provider a *new* chat would
+  // currently default to, or reopening an old Claude thread after switching
+  // to Codex elsewhere would mislabel it as Codex.
   const thread = state.currentThreadId ? state.currentThread : null;
   const runtime = state.currentThreadId
     ? state.threadRuntime.get(state.currentThreadId) || {}
     : {};
+  const picked = thread
+    ? state.settings.modelByProvider[thread.provider || providerForThread(thread.id)] || ""
+    : "";
+  const threadProvider = thread ? thread.provider || providerForThread(thread.id) : null;
+  const displayProvider = threadProvider || provider;
+  const selected = state.settings.modelByProvider[displayProvider] || "";
+  const catalogName = modelEntry(displayProvider)?.displayName || selected || "مدل پیش‌فرض";
+  const name = thread
+    ? picked || runtime.model || thread.model || catalogName
+    : catalogName;
+  const effort = state.settings.effort;
+  elements.modelLabel.textContent =
+    effort && EFFORT_LABELS[effort] ? `${name} · ${EFFORT_LABELS[effort]}` : name;
+
   elements.modelChip.title = thread
-    ? [
-        providerLabel(thread.provider || providerForThread(thread.id)),
-        runtime.model || thread.model || name,
-      ]
+    ? [providerLabel(threadProvider), runtime.model || thread.model || name]
         .filter(Boolean)
         .join("  ·  ")
     : `${name} — برای گفتگوی تازه`;
@@ -2246,7 +2264,7 @@ function buildChoiceRow({ value, label, selected, dataset }) {
 }
 
 function renderRunChipMenu() {
-  const provider = state.settings.provider;
+  const provider = activeRunProvider();
   const models = state.modelsByProvider[provider] || [];
   const selectedModel = state.settings.modelByProvider[provider] || "";
 
@@ -2307,7 +2325,7 @@ function setRunSetting({ model, effort }) {
   if (model !== undefined) {
     state.settings.modelByProvider = {
       ...state.settings.modelByProvider,
-      [state.settings.provider]: model,
+      [activeRunProvider()]: model,
     };
   }
   if (effort !== undefined) state.settings.effort = effort;
@@ -2466,6 +2484,47 @@ function recordTurnTiming(turnId, patch) {
   const current = state.turnTimings.get(turnId) || {};
   state.turnTimings.set(turnId, { ...current, ...patch });
   applyTurnTiming(turnId);
+}
+
+function startTitleRename() {
+  const threadId = state.currentThreadId;
+  if (!threadId || !state.currentThread) return;
+  const heading = elements.threadTitle;
+  const provider = activeRunProvider();
+  const original = heading.textContent;
+  const input = document.createElement("input");
+  input.className = "thread-title-input";
+  input.value = state.currentThread.name?.trim() || original;
+  input.maxLength = 120;
+  input.setAttribute("aria-label", "نام گفتگو");
+  heading.replaceChildren(input);
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    heading.textContent = original;
+    if (!save || !name || name === original) return;
+    try {
+      await rpc("thread/name/set", { provider, threadId, name });
+      const thread = threadById(threadId);
+      if (thread) thread.name = name;
+      if (state.currentThread?.id === threadId) {
+        state.currentThread.name = name;
+        heading.textContent = name;
+      }
+      void refreshThreads();
+    } catch (error) {
+      toast(error.message || "تغییر نام گفتگو انجام نشد.", "error");
+    }
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") void finish(true);
+    else if (event.key === "Escape") void finish(false);
+  });
+  input.addEventListener("blur", () => void finish(true));
+  input.focus();
+  input.select();
 }
 
 function threadDisplayTitle(thread) {
@@ -3607,7 +3666,7 @@ function planCollaborationMode() {
       developer_instructions: null,
       model,
       reasoning_effort:
-        template.reasoning_effort || state.settings.effort || "medium",
+        state.settings.effort || template.reasoning_effort || "medium",
     },
   };
 }
@@ -3622,7 +3681,7 @@ function defaultCollaborationMode() {
     settings: {
       developer_instructions: null,
       model,
-      reasoning_effort: template.reasoning_effort || state.settings.effort || null,
+      reasoning_effort: state.settings.effort || template.reasoning_effort || null,
     },
   };
 }
@@ -4768,6 +4827,22 @@ function restoreRecentUserMessages(thread) {
       continue;
     }
 
+    // Native Claude threads re-derive their history straight from Claude's own
+    // transcript on every resume, minting fresh turn/item ids each time — they
+    // never match what this optimistic entry recorded live, so the id-based
+    // check above can never reconcile it. Fall back to matching by text so an
+    // already-persisted message doesn't linger here and get duplicated below.
+    const optimisticText = itemText({ type: "userMessage", content: optimistic.input });
+    const alreadyInHistory = (thread.turns || []).some((turn) =>
+      (turn.items || []).some(
+        (item) => item.type === "userMessage" && itemText(item) === optimisticText,
+      ),
+    );
+    if (alreadyInHistory) {
+      state.optimisticUserMessages.delete(clientId);
+      continue;
+    }
+
     const item = {
       clientId,
       content: optimistic.input,
@@ -5338,6 +5413,8 @@ async function sendPrompt(
       });
       if (instructions) params.developerInstructions = instructions;
     }
+    const turnModel = state.settings.modelByProvider[provider] || "";
+    if (turnModel) params.model = turnModel;
     if (
       state.settings.effort &&
       !params.collaborationMode &&
@@ -6705,6 +6782,8 @@ elements.modelOptions.addEventListener("click", (event) => {
   if (!option) return;
   setRunSetting({ model: option.dataset.modelValue });
 });
+elements.threadTitle.title = "برای تغییر نام گفتگو دو بار کلیک کنید";
+elements.threadTitle.addEventListener("dblclick", startTitleRename);
 elements.effortOptions.addEventListener("click", (event) => {
   const option = event.target.closest("[data-effort-value]");
   if (!option) return;

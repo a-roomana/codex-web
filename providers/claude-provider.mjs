@@ -881,6 +881,7 @@ export class ClaudeProvider {
       case "thread/unarchive":
         return this.archiveThread(params, method === "thread/archive");
       case "thread/setName":
+      case "thread/name/set":
         return this.setName(params);
       case "thread/compact/start":
         return this.compactThread(params);
@@ -1264,6 +1265,8 @@ export class ClaudeProvider {
     const effort = validateEffort(
       params.effort === undefined ? thread.effort : params.effort,
     );
+    if (typeof params.model === "string" && params.model) thread.model = params.model;
+    if (params.effort !== undefined) thread.effort = effort;
     const turn = {
       id: randomUUID(),
       status: "inProgress",

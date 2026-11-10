@@ -144,6 +144,7 @@ const RPC_ALLOWLIST = new Set([
   "thread/unarchive",
   "thread/compact/start",
   "thread/setName",
+  "thread/name/set",
   "thread/goal/set",
   "thread/goal/get",
   "thread/goal/clear",

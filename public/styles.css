@@ -2791,13 +2791,14 @@ button.context-chip:hover {
     0 0 24px rgb(var(--accent-rgb) / 0.22);
 }
 
+/* Always in the layout, in both states, so it never shifts the mic/send
+   buttons next to it — a click still in flight when it goes inert lands on
+   a disabled button instead of hijacking whatever slid into its place. */
 .stop-button {
-  color: var(--bg);
-  background: var(--text);
+  color: var(--muted);
+  background: transparent;
   border-radius: 50%;
-  box-shadow:
-    0 0 0 1px rgb(255 255 255 / 0.08),
-    0 4px 14px rgb(0 0 0 / 0.2);
+  transition: color 120ms ease, background 120ms ease, box-shadow 120ms ease;
 }
 
 .stop-button svg {
@@ -2806,7 +2807,20 @@ button.context-chip:hover {
   fill: currentcolor;
 }
 
-.stop-button:hover {
+.stop-button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.stop-button:not(:disabled) {
+  color: var(--bg);
+  background: var(--text);
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 0.08),
+    0 4px 14px rgb(0 0 0 / 0.2);
+}
+
+.stop-button:not(:disabled):hover {
   background: #fff;
   box-shadow:
     0 0 0 1px rgb(255 255 255 / 0.12),
@@ -2814,7 +2828,7 @@ button.context-chip:hover {
   transform: translateY(-1px);
 }
 
-.stop-button:active {
+.stop-button:not(:disabled):active {
   transform: translateY(0);
 }
 
@@ -2937,7 +2951,7 @@ button.context-chip:hover {
 .toast-region {
   position: fixed;
   z-index: 100;
-  top: 18px;
+  top: 78px;
   left: 18px;
   display: grid;
   width: min(360px, calc(100vw - 36px));
@@ -4011,4 +4025,14 @@ dialog form,
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+.thread-title-input {
+  width: 100%;
+  padding: 0 6px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--accent, currentColor);
+  border-radius: 6px;
 }

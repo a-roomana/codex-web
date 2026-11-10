@@ -439,7 +439,7 @@ test("slash commands are accessible and stay isolated from model turns", async (
   assert.equal(rpcRequests.length, requestsBeforeDismissedSlash);
 
   assert.equal(
-    document.querySelector("#stop-turn").classList.contains("hidden"),
+    document.querySelector("#stop-turn").disabled,
     false,
     "the source thread should still be busy before /new",
   );
@@ -488,7 +488,7 @@ test("slash commands are accessible and stay isolated from model turns", async (
     },
   });
   await waitFor(
-    () => document.querySelector("#stop-turn").classList.contains("hidden"),
+    () => document.querySelector("#stop-turn").disabled,
     "the conversation stayed busy",
   );
 

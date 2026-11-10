@@ -792,9 +792,7 @@ test("composer uses a neon palette frame and neutral ChatGPT-like stop control",
   ]);
   const composer = styles.match(/\.composer\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
   const stop =
-    [...styles.matchAll(/\.stop-button\s*\{(?<body>[^}]*)\}/g)]
-      .map((match) => match.groups?.body || "")
-      .find((rule) => /background:/.test(rule)) || "";
+    styles.match(/\.stop-button:not\(:disabled\)\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
   const placeholder =
     styles.match(/\.composer textarea:placeholder-shown\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
 
@@ -817,7 +815,7 @@ test("composer uses a neon palette frame and neutral ChatGPT-like stop control",
   assert.match(composer, /rgb\(var\(--violet-rgb\) \/ 0\.46\)/);
   assert.match(stop, /color:\s*var\(--bg\)/);
   assert.match(stop, /background:\s*var\(--text\)/);
-  assert.match(stop, /border-radius:\s*50%/);
+  assert.match(styles, /\.stop-button\s*\{[^}]*border-radius:\s*50%/s);
   assert.doesNotMatch(stop, /danger|warning|#4b1728/);
   assert.match(placeholder, /direction:\s*rtl/);
   assert.match(placeholder, /text-align:\s*right/);
